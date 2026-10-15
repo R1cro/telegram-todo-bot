@@ -4,8 +4,8 @@ import type { Category, TodoItem, CategoryStats } from './db.js';
 /**
  * Formats button text, truncating if too long for the inline keyboard row.
  */
-function formatItemButtonText(text: string, isFullWidth = false): string {
-  const maxDisplayLen = isFullWidth ? 35 : 18;
+function formatItemButtonText(text: string): string {
+  const maxDisplayLen = 35;
   const cleanText = text.length > maxDisplayLen
     ? text.substring(0, maxDisplayLen - 1).trim() + '…'
     : text;
@@ -41,31 +41,43 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 2. Interactive item buttons (clickable to toggle status and adjust quantity)
+  // 2. Interactive item rows
   if (items.length > 0) {
     // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
-    for (const item of displayItems) {
+    for (let index = 0; index < displayItems.length; index++) {
+      const item = displayItems[index];
+      const title = formatItemButtonText(item.text);
+
+      // Row 1: Full-width item title (green success button if completed)
       if (item.is_done) {
-        // Completed items: full-width button with green success style and no checkbox icon
-        const doneLabel = item.quantity && item.quantity > 1 ? `${item.text} (${item.quantity} шт.)` : item.text;
-        const buttonText = formatItemButtonText(doneLabel, true);
         keyboard.add({
-          text: buttonText,
+          text: title,
           callback_data: `toggle:${item.id}`,
           style: 'success',
         }).row();
       } else {
-        // Active items: clean title button without duplicated quantity, and -, count, + controls in ONE row
-        const qty = item.quantity || 1;
-        const buttonText = formatItemButtonText(item.text, false);
-        keyboard
-          .text(buttonText, `toggle:${item.id}`)
-          .text('➖', `qty_dec:${item.id}`)
-          .text(`${qty} шт.`, 'noop')
-          .text('➕', `qty_inc:${item.id}`)
-          .row();
+        keyboard.text(title, `toggle:${item.id}`).row();
+      }
+
+      // Row 2: Controls row: [Edit], [-], [X шт.], [+], [Delete (red danger)]
+      const qty = item.quantity || 1;
+      keyboard
+        .text('✏️', `edit_item:${item.id}`)
+        .text('➖', `qty_dec:${item.id}`)
+        .text(`${qty} шт.`, 'noop')
+        .text('➕', `qty_inc:${item.id}`);
+
+      keyboard.add({
+        text: '🗑',
+        callback_data: `del_item:${item.id}`,
+        style: 'danger',
+      }).row();
+
+      // Row 3: Visual divider between items to clearly separate item cards
+      if (index < displayItems.length - 1) {
+        keyboard.text('┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄', 'noop').row();
       }
     }
 
@@ -79,7 +91,6 @@ export function buildListKeyboard(
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
       .text('📋 Текстом', `export:${category}`)
-      .text('✏️ Правка', `prompt_edit:${category}`)
       .row();
   }
 

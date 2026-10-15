@@ -15,6 +15,7 @@ import {
   getItemById,
   updateItemQuantity,
   updateItemText,
+  deleteItem,
 } from '../src/db.js';
 
 console.log('🧪 Running SQLite database entity lifecycle test suite...\n');
@@ -152,6 +153,12 @@ async function run() {
     throw new Error('Item text does not match updated value');
   }
   console.log(`✅ Item text updated successfully: "${updatedItem.text}"`);
+
+  const deleted = await deleteItem(testChatId, createdItemId);
+  if (!deleted) throw new Error('Expected deleteItem to return true');
+  const deletedItem = await getItemById(testChatId, createdItemId);
+  if (deletedItem !== null) throw new Error('Expected item to be deleted from database');
+  console.log(`✅ Item deleted successfully: id=${createdItemId}`);
 
   // Cleanup test artifacts
   await clearCategoryFromList(list2.id, 'shopping');

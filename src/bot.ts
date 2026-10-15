@@ -13,6 +13,7 @@ import {
   updateItemQuantity,
   updateItemText,
   toggleItemDone,
+  deleteItem,
   clearCompletedFromList,
   clearCategoryFromList,
   getListStats,
@@ -755,6 +756,20 @@ bot.on('callback_query:data', async (ctx) => {
     }
     const newQty = await updateItemQuantity(chatId, itemId, -1);
     await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
+    const user = await getOrCreateUser(chatId);
+    await sendOrUpdateList(ctx, user.active_category, messageId);
+    return;
+  }
+
+  // Delete item: del_item:<id>
+  if (data.startsWith('del_item:')) {
+    const itemId = Number(data.split(':')[1]);
+    const item = await getItemById(chatId, itemId);
+    const itemName = item ? item.text : 'Пункт';
+
+    await deleteItem(chatId, itemId);
+    await ctx.answerCallbackQuery({ text: `Удалено: ${itemName}` });
+
     const user = await getOrCreateUser(chatId);
     await sendOrUpdateList(ctx, user.active_category, messageId);
     return;

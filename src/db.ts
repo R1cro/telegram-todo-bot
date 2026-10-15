@@ -413,6 +413,18 @@ export async function toggleItemDone(chatId: number, itemId: number): Promise<bo
 }
 
 /**
+ * Deletes a single item by id and chat id.
+ */
+export async function deleteItem(chatId: number, itemId: number): Promise<boolean> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: 'DELETE FROM items WHERE id = ? AND chat_id = ?',
+    args: [itemId, chatId],
+  });
+  return res.rowsAffected > 0;
+}
+
+/**
  * Removes completed items from a specific list entity.
  */
 export async function clearCompletedFromList(listId: number, category: Category): Promise<number> {
