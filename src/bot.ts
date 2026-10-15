@@ -376,6 +376,26 @@ bot.command('start', async (ctx) => {
   const chatId = ctx.chat.id;
   await getOrCreateUser(chatId, ctx.from?.username, ctx.from?.first_name);
 
+  const startParam = ctx.match?.trim();
+  if (startParam && startParam.startsWith('scan_')) {
+    const barcode = startParam.replace('scan_', '').trim();
+    if (barcode) {
+      const activeList = await getOrCreateActiveList(chatId);
+      const scanned = await processScannedProduct(chatId, activeList.id, { barcode });
+      await sendOrUpdateList(ctx, 'shopping');
+      const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+      if (scanned.success) {
+        const title = scanned.matchedItem ? 'Штрихкод считан' : 'Товар добавлен сканером';
+        await ctx.reply(
+          `✅ <b>${title}:</b> «${scanned.productName}»${priceInfo}\n` +
+          `<i>Отмечен в списке покупок как купленный!</i>`,
+          { parse_mode: 'HTML' }
+        );
+      }
+      return;
+    }
+  }
+
   const aiStatus = config.isAiEnabled
     ? '✨ <b>AI-распознавание (Gemini):</b> включено'
     : '⚙️ <b>Парсер:</b> быстрый локальный (без внешних API)';
@@ -503,13 +523,17 @@ bot.command('scan', async (ctx) => {
   try { await ctx.deleteMessage(); } catch {}
 
   if (!rawText) {
-    const keyboard = new InlineKeyboard().text('❌ Закрыть', 'close_scan_prompt');
+    const keyboard = new InlineKeyboard();
+    if (config.webAppUrl) {
+      keyboard.webApp('📷 Открыть камеру (сканер)', config.webAppUrl).row();
+    }
+    keyboard.text('❌ Закрыть', 'close_scan_prompt');
     await ctx.reply(
-      '📷 <b>Как использовать сканирование товаров:</b>\n\n' +
-      '• <b>Сфотографируйте штрихкод или ценник товара</b> и отправьте фото в чат!\n' +
-      '• Либо отправьте номер штрихкода: <code>/scan 4600605021234</code>\n' +
-      '• Можно сразу с ценой: <code>/scan 4600605021234 89</code>\n\n' +
-      '✨ <i>Бот автоматически определит товар, добавит его в список покупок и отметит как купленный с указанием цены!</i>',
+      '📷 <b>Сканирование товаров камерой:</b>\n\n' +
+      (config.webAppUrl ? '• Нажмите кнопку ниже, чтобы <b>запустить живую камеру</b> прямо в Telegram.\n' : '') +
+      '• <b>Сфотографировать камерой:</b> нажмите скрепку 📎 ➔ выберите значок <b>Камера 📷</b> прямо над клавиатурой (фотографируйте штрихкод без захода в галерею)!\n' +
+      '• <b>Или отправьте номер штрихкода:</b> <code>/scan 4600605021234 [цена]</code>.\n\n' +
+      '✨ <i>Бот автоматически определит товар, добавит его в список покупок и отметит как купленный с расчетом суммы в корзине!</i>',
       { parse_mode: 'HTML', reply_markup: keyboard }
     );
     return;
@@ -1117,13 +1141,17 @@ bot.on('callback_query:data', async (ctx) => {
   // Barcode / product scanner prompt: scan_prompt
   if (data === 'scan_prompt') {
     await ctx.answerCallbackQuery();
-    const promptKeyboard = new InlineKeyboard()
-      .text('❌ Закрыть', 'close_scan_prompt');
+    const promptKeyboard = new InlineKeyboard();
+    if (config.webAppUrl) {
+      promptKeyboard.webApp('📷 Открыть камеру (сканер)', config.webAppUrl).row();
+    }
+    promptKeyboard.text('❌ Закрыть', 'close_scan_prompt');
 
     await ctx.reply(
-      '📷 <b>Сканирование товара</b>\n\n' +
-      '• <b>Сфотографируйте штрихкод или ценник:</b> нажмите на скрепку 📎 или камеру 📷 и отправьте фото прямо в чат!\n' +
-      '• <b>Или отправьте номер штрихкода:</b> <code>/scan 4600605021234</code> (можно сразу с ценой: <code>/scan 4600605021234 89</code>).\n\n' +
+      '📷 <b>Сканирование товаров камерой</b>\n\n' +
+      (config.webAppUrl ? '• Нажмите кнопку ниже, чтобы <b>запустить живую камеру</b> прямо в Telegram.\n' : '') +
+      '• <b>Сфотографировать камерой:</b> нажмите скрепку 📎 ➔ выберите значок <b>Камера 📷</b> прямо над клавиатурой (фотографируйте штрихкод сразу, без перехода в галерею)!\n' +
+      '• <b>Или отправьте номер штрихкода:</b> <code>/scan 4600605021234 [цена]</code>.\n\n' +
       '✨ <i>Бот автоматически определит товар, добавит его в список покупок и отметит как купленный с расчетом суммы в корзине!</i>',
       {
         parse_mode: 'HTML',
