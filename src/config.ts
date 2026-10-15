@@ -4,17 +4,20 @@ dotenv.config();
 export interface AppConfig {
   botToken: string;
   geminiApiKey?: string;
+  geminiModel: string;
   dbPath: string;
   isAiEnabled: boolean;
 }
 
 const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const dbPath = process.env.DB_PATH || 'file:todo_bot.db';
 
 export const config: AppConfig = {
   botToken,
   geminiApiKey: geminiApiKey || undefined,
+  geminiModel,
   dbPath,
   isAiEnabled: Boolean(geminiApiKey && geminiApiKey.trim().length > 0),
 };

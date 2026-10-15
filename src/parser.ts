@@ -8,6 +8,11 @@ export interface ParsedItem {
   extractedBy: 'ai' | 'local';
 }
 
+export interface VoiceParseResult {
+  transcript: string;
+  items: ParsedItem[];
+}
+
 let genAiClient: GoogleGenAI | null = null;
 
 function getGenAiClient(): GoogleGenAI | null {
@@ -137,7 +142,7 @@ User message:
 """${text}"""`;
 
     const response = await client.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: config.geminiModel,
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -188,6 +193,99 @@ User message:
     return null;
   } catch (error) {
     console.error('Error invoking Gemini API, falling back to local parser:', error);
+    return null;
+  }
+}
+
+/**
+ * Multimodal AI-assisted voice parser using Google Gemini API.
+ * Transcribes audio and extracts shopping items and tasks.
+ */
+export async function parseVoiceWithGemini(
+  audioBase64: string,
+  mimeType: string,
+  defaultCategory: Category
+): Promise<VoiceParseResult | null> {
+  const client = getGenAiClient();
+  if (!client) return null;
+
+  try {
+    const prompt = `Listen to the attached voice message.
+1. Transcribe the speech accurately into the "transcript" field in the original language.
+2. Extract all individual shopping items and todo tasks from the speech into the "items" array.
+3. Categorize each item into "shopping" (groceries, goods, purchases) or "task" (errands, calls, chores, actions).
+4. Remove conversational filler words (e.g. "добавь пожалуйста", "надо не забыть").
+5. Default category if ambiguous: "${defaultCategory}".`;
+
+    const response = await client.models.generateContent({
+      model: config.geminiModel,
+      contents: [
+        {
+          inlineData: {
+            mimeType: mimeType || 'audio/ogg',
+            data: audioBase64,
+          },
+        },
+        {
+          text: prompt,
+        },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+        responseJsonSchema: {
+          type: Type.OBJECT,
+          properties: {
+            transcript: {
+              type: Type.STRING,
+              description: 'Full accurate transcription of the voice message',
+            },
+            items: {
+              type: Type.ARRAY,
+              description: 'Extracted todo and shopping items',
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: {
+                    type: Type.STRING,
+                    description: 'Clean concise item text',
+                  },
+                  category: {
+                    type: Type.STRING,
+                    enum: ['shopping', 'task'],
+                    description: 'Target list category',
+                  },
+                },
+                required: ['text', 'category'],
+              },
+            },
+          },
+          required: ['transcript', 'items'],
+        },
+      },
+    });
+
+    if (!response.text) return null;
+
+    const data = JSON.parse(response.text) as {
+      transcript?: string;
+      items?: Array<{ text: string; category: string }>;
+    };
+
+    const transcript = data.transcript?.trim() || '';
+    const items: ParsedItem[] = (data.items || [])
+      .filter((it) => it.text && it.text.trim())
+      .map((it) => ({
+        text: capitalize(it.text.trim()),
+        category: it.category === 'task' ? 'task' : 'shopping',
+        extractedBy: 'ai',
+      }));
+
+    return {
+      transcript,
+      items,
+    };
+  } catch (error) {
+    console.error('Error invoking Gemini voice API:', error);
     return null;
   }
 }

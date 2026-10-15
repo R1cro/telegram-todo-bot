@@ -16,7 +16,7 @@ import {
   type Category,
   type TodoItem,
 } from './db.js';
-import { parseMessage } from './parser.js';
+import { parseMessage, parseVoiceWithGemini } from './parser.js';
 import {
   buildListKeyboard,
   buildConfirmClearKeyboard,
@@ -134,6 +134,7 @@ ${aiStatus}
 • Просто пишите сообщение: <code>молоко, хлеб, сыр</code>
 • Или построчно со знаками <code>-</code> или цифрами
 • Или свободным текстом
+• Или запишите голосовое сообщение (при включенном Gemini AI)
 
 Управляйте активным списком кнопками ниже 👇`;
 
@@ -359,6 +360,121 @@ bot.on('message:text', async (ctx) => {
   } else {
     await ctx.reply(report, { parse_mode: 'HTML' });
     await sendOrUpdateList(ctx, primaryCategory);
+  }
+});
+
+// ---------------- VOICE AND AUDIO MESSAGE PROCESSING ---------------- //
+
+bot.on(['message:voice', 'message:audio'], async (ctx) => {
+  const voice = ctx.message.voice || ctx.message.audio;
+  if (!voice) return;
+
+  const chatId = ctx.chat.id;
+  const isGroup = ctx.chat.type !== 'private';
+
+  if (!config.isAiEnabled) {
+    if (!isGroup) {
+      await ctx.reply(
+        '🎙 <b>Голосовые сообщения требуют подключения Gemini AI.</b>\n\n' +
+        'Укажите <code>GEMINI_API_KEY</code> в файле <code>.env</code> для распознавания голоса.',
+        { parse_mode: 'HTML' }
+      );
+    }
+    return;
+  }
+
+  await ctx.replyWithChatAction('typing');
+
+  try {
+    const file = await ctx.api.getFile(voice.file_id);
+    if (!file.file_path) {
+      await ctx.reply('Не удалось загрузить аудиофайл из Telegram.');
+      return;
+    }
+
+    const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
+    const res = await fetch(fileUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to download voice file: ${res.statusText}`);
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    const base64Audio = Buffer.from(arrayBuffer).toString('base64');
+    const mimeType = ('mime_type' in voice && voice.mime_type) ? voice.mime_type : 'audio/ogg';
+
+    const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
+    const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
+
+    const voiceResult = await parseVoiceWithGemini(base64Audio, mimeType, user.active_category);
+
+    if (!voiceResult || voiceResult.items.length === 0) {
+      if (voiceResult?.transcript) {
+        await ctx.reply(
+          `🎙 <i>«${voiceResult.transcript}»</i>\n\nНе удалось выделить пункты покупок или дел из этого голосового сообщения.`,
+          { parse_mode: 'HTML' }
+        );
+      } else if (!isGroup) {
+        await ctx.reply('Не удалось распознать речь в голосовом сообщении. Попробуйте сказать четче.');
+      }
+      return;
+    }
+
+    // Always append items to the currently active list entity
+    const activeList = await getOrCreateActiveList(chatId);
+
+    await addItems(
+      activeList.id,
+      chatId,
+      voiceResult.items.map((p) => ({
+        category: p.category,
+        text: p.text,
+      }))
+    );
+
+    const shoppingAdded = voiceResult.items.filter((i) => i.category === 'shopping');
+    const tasksAdded = voiceResult.items.filter((i) => i.category === 'task');
+    const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
+
+    let report = `🎙 <i>«${voiceResult.transcript}»</i>\n\n`;
+    report += '✅ <b>Добавлено из голоса (✨ AI):</b>\n';
+    if (shoppingAdded.length > 0) {
+      report += `🛒 В покупки (${shoppingAdded.length}): <i>${shoppingAdded.map((i) => i.text).join(', ')}</i>\n`;
+    }
+    if (tasksAdded.length > 0) {
+      report += `📝 В дела (${tasksAdded.length}): <i>${tasksAdded.map((i) => i.text).join(', ')}</i>\n`;
+    }
+
+    // If the active list already had an open Telegram card message, edit it in-place
+    let updatedExistingMessage = false;
+    if (activeList.last_message_id) {
+      try {
+        const [updatedItems, stats] = await Promise.all([
+          getListItems(activeList.id, primaryCategory),
+          getListStats(activeList.id),
+        ]);
+        const messageText = renderListMessage(primaryCategory, updatedItems, isGroup);
+        const keyboard = buildListKeyboard(primaryCategory, updatedItems, stats);
+
+        await ctx.api.editMessageText(chatId, activeList.last_message_id, messageText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        });
+        updatedExistingMessage = true;
+      } catch (e: any) {
+        updatedExistingMessage = false;
+      }
+    }
+
+    if (updatedExistingMessage) {
+      report += '\n🔄 <i>Текущий список дополнен и обновлен выше!</i>';
+      await ctx.reply(report, { parse_mode: 'HTML' });
+    } else {
+      await ctx.reply(report, { parse_mode: 'HTML' });
+      await sendOrUpdateList(ctx, primaryCategory);
+    }
+  } catch (error) {
+    console.error('Error handling voice message:', error);
+    await ctx.reply('Произошла ошибка при обработке голосового сообщения.');
   }
 });
 
