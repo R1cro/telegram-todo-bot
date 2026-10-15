@@ -14,6 +14,16 @@ export interface ScannedProductData {
   barcode: string | null;
   productName: string | null;
   price: number | null;
+  rawBarcodeText?: string | null;
+  notes?: string | null;
+}
+
+export interface BarcodeLookupStep {
+  sourceId: 'local' | 'gs1' | 'barcode-list' | 'openfoodfacts' | 'upcitemdb' | 'gemini-search';
+  sourceName: string;
+  status: 'found' | 'not_found' | 'error' | 'skipped';
+  resultName?: string;
+  details?: string;
 }
 
 export interface BarcodeProcessResult {
@@ -24,6 +34,8 @@ export interface BarcodeProcessResult {
   barcode: string | null;
   isNewItem: boolean;
   createdItemId?: number;
+  lookupSteps: BarcodeLookupStep[];
+  resolvedSource?: string;
   error?: string;
 }
 
@@ -81,7 +93,25 @@ export async function lookupBarcodeOnline(
     return barcodeListResult;
   }
 
-  // 4. Query Open Food Facts, Open Products Facts, and Open Beauty Facts APIs
+  // 4. Query Open Food Facts / Products Facts
+  const offResult = await lookupOpenFoodFacts(cleanBarcode);
+  if (offResult && offResult.name) {
+    return offResult;
+  }
+
+  // 5. Query UPCitemdb database API
+  const upcResult = await lookupUpcItemDb(cleanBarcode);
+  if (upcResult && upcResult.name) {
+    return upcResult;
+  }
+
+  return null;
+}
+
+/**
+ * Queries Open Food Facts, Open Products Facts, and Open Beauty Facts APIs.
+ */
+export async function lookupOpenFoodFacts(barcode: string): Promise<{ name?: string } | null> {
   const apiHosts = [
     'world.openfoodfacts.org',
     'world.openproductsfacts.org',
@@ -93,7 +123,7 @@ export async function lookupBarcodeOnline(
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3000);
 
-      const res = await fetch(`https://${host}/api/v2/product/${cleanBarcode}.json`, {
+      const res = await fetch(`https://${host}/api/v2/product/${barcode}.json`, {
         signal: controller.signal,
         headers: {
           'User-Agent': 'TelegramTodoShoppingBot/1.0 (https://github.com/R1cro/telegram-todo-bot)',
@@ -117,16 +147,19 @@ export async function lookupBarcodeOnline(
           }
         }
       }
-    } catch {
-      // Timeout or network failure on this host, safely try next
-    }
+    } catch {}
   }
+  return null;
+}
 
-  // 5. Query UPCitemdb database API
+/**
+ * Queries UPCitemdb database API.
+ */
+export async function lookupUpcItemDb(barcode: string): Promise<{ name?: string } | null> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${cleanBarcode}`, {
+    const res = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'TelegramTodoShoppingBot/1.0',
@@ -145,7 +178,6 @@ export async function lookupBarcodeOnline(
       }
     }
   } catch {}
-
   return null;
 }
 
@@ -299,14 +331,32 @@ export async function recognizeBarcodeAndProductFromImage(
   const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
   const base64Data = imageBuffer.toString('base64');
 
-  const prompt = `You are an automated barcode scanner and retail product identification assistant.
-Inspect the provided camera photo carefully:
-1. Locate any product barcode (EAN-13, EAN-8, UPC-A, Code 128, QR code) and extract its numeric digits. If barcode is blurry or absent, return null.
-2. Read the product packaging and/or shelf price tag to determine the concise product name in Russian (e.g. "Молоко Домик в деревне 3.2%", "Сыр Российский", "Чипсы Lay's").
-3. Detect any shelf price in rubles if a price tag or sticker is visible in the photo. Extract the numeric value (e.g. 89.90 or 150). Do not include currency symbols. If no price is visible, return null.
+  const prompt = `You are a high-precision optical barcode scanner and retail product recognition system.
+Examine this image with extreme care:
 
-Return strictly valid JSON with no markdown formatting, matching this schema:
-{"barcode": string | null, "productName": string | null, "price": number | null}`;
+1. BARCODE / EAN DIGITS (HIGHEST PRIORITY):
+- Search the entire image for any product barcode (vertical black and white bars) or QR code.
+- Read the digits printed directly underneath or alongside the barcode lines.
+- In Russia/CIS, standard retail barcodes (EAN-13) have 13 digits (typically starting with 460-469).
+- IMPORTANT: In EAN-13, the first digit (e.g. "4") is frequently printed slightly to the left of the outer guard bars! Do NOT omit the first digit!
+- Read all digits cleanly without spaces or dashes (e.g. "4670082523924").
+- If the barcode stripes are visible but the numbers are blurry or partially cut off, return whatever digits you can discern in "rawBarcodeText".
+- If no barcode or numbers are visible, set barcode to null.
+
+2. PACKAGING / BRAND NAME:
+- Read any brand name and product description on the packaging in Russian or English (e.g. "Лакомство Dreamies с курицей 140г").
+
+3. PRICE:
+- If a store price tag, discount sticker, or shelf tag is visible, extract the numeric price in rubles (e.g. 149.90 or 89).
+
+Return strictly JSON matching this schema:
+{
+  "barcode": string | null,
+  "rawBarcodeText": string | null,
+  "productName": string | null,
+  "price": number | null,
+  "notes": string | null
+}`;
 
   try {
     const candidateModels = Array.from(
@@ -338,17 +388,42 @@ Return strictly valid JSON with no markdown formatting, matching this schema:
               ],
             },
           ],
+          config: {
+            responseMimeType: 'application/json',
+          },
         });
 
-        const text = response.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        const cleanJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const text =
+          response.text ||
+          response.candidates?.[0]?.content?.parts
+            ?.map((p: any) => p.text)
+            .filter(Boolean)
+            .join('\n') ||
+          '';
 
-        if (cleanJson) {
-          const parsed = JSON.parse(cleanJson);
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          const match = text.match(/\{[\s\S]*\}/);
+          if (match) {
+            try {
+              parsed = JSON.parse(match[0]);
+            } catch {}
+          }
+        }
+
+        if (parsed) {
+          const rawBc = parsed.barcode || parsed.rawBarcodeText;
+          const digits = rawBc ? String(rawBc).replace(/\D+/g, '') : null;
+          const validBarcode = digits && digits.length >= 7 && digits.length <= 14 ? digits : null;
+
           return {
-            barcode: parsed.barcode ? String(parsed.barcode).replace(/\D+/g, '') : null,
+            barcode: validBarcode,
+            rawBarcodeText: rawBc ? String(rawBc).trim() : null,
             productName: parsed.productName ? String(parsed.productName).trim() : null,
             price: typeof parsed.price === 'number' && parsed.price > 0 ? parsed.price : null,
+            notes: parsed.notes ? String(parsed.notes).trim() : undefined,
           };
         }
       } catch (err) {
@@ -426,38 +501,223 @@ export async function processScannedProduct(
   } = { autoAdd: true }
 ): Promise<BarcodeProcessResult> {
   const cleanBarcode = input.barcode ? input.barcode.trim() : null;
-  let finalName = input.productName ? input.productName.trim() : '';
+  let finalName = '';
   let finalPrice = input.price !== undefined && input.price !== null && input.price > 0 ? input.price : null;
+  const lookupSteps: BarcodeLookupStep[] = [];
+  let resolvedSource: string | undefined = undefined;
 
-  // 1. Check local catalog
+  // 1. If barcode is present, prioritize database and registry resolution
   if (cleanBarcode) {
-    const localCatalog = await getProductByBarcode(cleanBarcode);
-    if (localCatalog) {
-      if (!finalName) finalName = localCatalog.name;
-      if (finalPrice === null && localCatalog.price) finalPrice = localCatalog.price;
+    // 1.1 Weight-based barcode (prefixes 20-29 in retail)
+    if (cleanBarcode.length === 13 && cleanBarcode.startsWith('2')) {
+      const prefixNum = parseInt(cleanBarcode.substring(0, 2), 10);
+      if (prefixNum >= 20 && prefixNum <= 29) {
+        finalName = `Весовой товар (${cleanBarcode.substring(2, 7)})`;
+        resolvedSource = 'Весовой штрихкод';
+        lookupSteps.push({
+          sourceId: 'local',
+          sourceName: 'Весовой штрихкод',
+          status: 'found',
+          resultName: finalName,
+        });
+      }
     }
 
-    // 2. Query open databases if name is still missing
+    // 1.2 Local SQLite catalog
     if (!finalName) {
-      const online = await lookupBarcodeOnline(cleanBarcode);
-      if (online?.name) finalName = online.name;
-      if (finalPrice === null && online?.price) finalPrice = online.price;
+      try {
+        const local = await getProductByBarcode(cleanBarcode);
+        if (local && local.name) {
+          finalName = local.name;
+          if (finalPrice === null && local.price) finalPrice = local.price;
+          resolvedSource = 'Локальная база (SQLite)';
+          lookupSteps.push({
+            sourceId: 'local',
+            sourceName: 'Локальная база (SQLite)',
+            status: 'found',
+            resultName: local.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'local',
+            sourceName: 'Локальная база (SQLite)',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'local',
+          sourceName: 'Локальная база (SQLite)',
+          status: 'error',
+          details: e?.message,
+        });
+      }
     }
 
-    // 2.5. Query Gemini with Google Search if still missing
+    // 1.3 GS1 Russia (National registrar: id.gs1ru.org)
     if (!finalName) {
-      const geminiFound = await lookupBarcodeWithGeminiSearch(cleanBarcode);
-      if (geminiFound?.name) finalName = geminiFound.name;
-      if (finalPrice === null && geminiFound?.price) finalPrice = geminiFound.price;
+      try {
+        const gs1 = await lookupGs1Russia(cleanBarcode);
+        if (gs1 && gs1.name) {
+          finalName = gs1.name;
+          resolvedSource = 'GS1 Russia (госреестр РФ)';
+          lookupSteps.push({
+            sourceId: 'gs1',
+            sourceName: 'GS1 Russia (госреестр РФ)',
+            status: 'found',
+            resultName: gs1.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'gs1',
+            sourceName: 'GS1 Russia (госреестр РФ)',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'gs1',
+          sourceName: 'GS1 Russia (госреестр РФ)',
+          status: 'error',
+          details: e?.message,
+        });
+      }
     }
 
-    // 3. Fallback name if still missing
+    // 1.4 Barcode-list.ru (Retailer Russian catalog)
     if (!finalName) {
-      finalName = `Товар (${cleanBarcode})`;
+      try {
+        const bcl = await lookupBarcodeListRu(cleanBarcode);
+        if (bcl && bcl.name) {
+          finalName = bcl.name;
+          resolvedSource = 'Barcode-list.ru';
+          lookupSteps.push({
+            sourceId: 'barcode-list',
+            sourceName: 'Barcode-list.ru',
+            status: 'found',
+            resultName: bcl.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'barcode-list',
+            sourceName: 'Barcode-list.ru',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'barcode-list',
+          sourceName: 'Barcode-list.ru',
+          status: 'error',
+          details: e?.message,
+        });
+      }
     }
 
-    // 4. Update local catalog with newest price and name
-    await saveOrUpdateProductCatalog(cleanBarcode, finalName, finalPrice);
+    // 1.5 Open Food Facts / Open Products Facts
+    if (!finalName) {
+      try {
+        const off = await lookupOpenFoodFacts(cleanBarcode);
+        if (off && off.name) {
+          finalName = off.name;
+          resolvedSource = 'Open Food Facts';
+          lookupSteps.push({
+            sourceId: 'openfoodfacts',
+            sourceName: 'Open Food Facts',
+            status: 'found',
+            resultName: off.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'openfoodfacts',
+            sourceName: 'Open Food Facts',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'openfoodfacts',
+          sourceName: 'Open Food Facts',
+          status: 'error',
+          details: e?.message,
+        });
+      }
+    }
+
+    // 1.6 UPCitemdb
+    if (!finalName) {
+      try {
+        const upc = await lookupUpcItemDb(cleanBarcode);
+        if (upc && upc.name) {
+          finalName = upc.name;
+          resolvedSource = 'UPCitemdb';
+          lookupSteps.push({
+            sourceId: 'upcitemdb',
+            sourceName: 'UPCitemdb',
+            status: 'found',
+            resultName: upc.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'upcitemdb',
+            sourceName: 'UPCitemdb',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'upcitemdb',
+          sourceName: 'UPCitemdb',
+          status: 'error',
+          details: e?.message,
+        });
+      }
+    }
+
+    // 1.7 Gemini Search with Google Grounding
+    if (!finalName && config.isAiEnabled) {
+      try {
+        const gem = await lookupBarcodeWithGeminiSearch(cleanBarcode);
+        if (gem && gem.name) {
+          finalName = gem.name;
+          if (finalPrice === null && gem.price) finalPrice = gem.price;
+          resolvedSource = 'Поиск Google (Gemini AI)';
+          lookupSteps.push({
+            sourceId: 'gemini-search',
+            sourceName: 'Поиск Google (Gemini AI)',
+            status: 'found',
+            resultName: gem.name,
+          });
+        } else {
+          lookupSteps.push({
+            sourceId: 'gemini-search',
+            sourceName: 'Поиск Google (Gemini AI)',
+            status: 'not_found',
+          });
+        }
+      } catch (e: any) {
+        lookupSteps.push({
+          sourceId: 'gemini-search',
+          sourceName: 'Поиск Google (Gemini AI)',
+          status: 'error',
+          details: e?.message,
+        });
+      }
+    }
+
+    // If found by barcode, save to local SQLite catalog
+    if (finalName) {
+      await saveOrUpdateProductCatalog(cleanBarcode, finalName, finalPrice);
+    }
+  }
+
+  // 2. Fallback to packaging OCR text if barcode was not in any database
+  if (!finalName && input.productName && input.productName.trim().length > 0) {
+    finalName = input.productName.trim();
+    resolvedSource = 'Текст с упаковки (нейросеть)';
+    if (cleanBarcode) {
+      await saveOrUpdateProductCatalog(cleanBarcode, finalName, finalPrice);
+    }
   }
 
   if (!finalName) {
@@ -468,20 +728,20 @@ export async function processScannedProduct(
       price: null,
       barcode: cleanBarcode,
       isNewItem: false,
-      error: 'Не удалось определить название товара',
+      lookupSteps,
+      resolvedSource,
+      error: 'Товар не найден ни в одной базе данных',
     };
   }
 
-  // 5. Match against active shopping list
+  // 3. Match against active shopping list
   const shoppingItems = await getListItems(activeListId, 'shopping');
   const matched = findMatchingShoppingItem(shoppingItems, finalName, cleanBarcode);
 
   if (matched) {
-    // Mark as completed if not done
     if (!matched.is_done) {
       await toggleItemDone(chatId, matched.id);
     }
-    // Update price and barcode
     await setItemPriceAndBarcode(chatId, matched.id, finalPrice, cleanBarcode);
 
     return {
@@ -491,10 +751,12 @@ export async function processScannedProduct(
       price: finalPrice,
       barcode: cleanBarcode,
       isNewItem: false,
+      lookupSteps,
+      resolvedSource,
     };
   }
 
-  // 6. Not in the active list: automatically add to shopping list if autoAdd is true
+  // 4. Auto-add to shopping list if autoAdd is true
   if (options.autoAdd !== false) {
     const addedIds = await addItems(activeListId, chatId, [
       {
@@ -519,6 +781,8 @@ export async function processScannedProduct(
       barcode: cleanBarcode,
       isNewItem: true,
       createdItemId,
+      lookupSteps,
+      resolvedSource,
     };
   }
 
@@ -529,5 +793,69 @@ export async function processScannedProduct(
     price: finalPrice,
     barcode: cleanBarcode,
     isNewItem: true,
+    lookupSteps,
+    resolvedSource,
   };
+}
+
+/**
+ * Formats a comprehensive scan report detailing the extracted barcode,
+ * product packaging text, shelf price, and database query results.
+ */
+export function formatBarcodeScanReport(scanned: ScannedProductData, result: BarcodeProcessResult): string {
+  let report = '📸 <b>Отчёт анализа фото товара:</b>\n\n';
+
+  // 1. Detected barcode on image
+  if (scanned.barcode) {
+    report += `🔢 <b>Считанный штрихкод:</b> <code>${scanned.barcode}</code> (${scanned.barcode.length} цифр)\n`;
+  } else if (scanned.rawBarcodeText) {
+    report += `🔢 <b>Штрихкод на фото:</b> <code>${scanned.rawBarcodeText}</code> ⚠️ <i>(неполный или размыт)</i>\n`;
+  } else {
+    report += `🔢 <b>Штрихкод на фото:</b> ⚠️ <i>Не обнаружен на изображении</i>\n`;
+    report += `  ↳ <i>Причина: полоски штрихкода не в фокусе, засвечены вспышкой/бликом или сняты под острым углом.</i>\n`;
+  }
+
+  // 2. Packaging / Price
+  if (scanned.productName) {
+    report += `🏷 <b>Текст с упаковки:</b> «${scanned.productName}»\n`;
+  }
+  if (scanned.price) {
+    report += `💵 <b>Ценник на фото:</b> ${scanned.price} ₽\n`;
+  }
+  report += '\n';
+
+  // 3. Database lookup steps
+  if (result.lookupSteps && result.lookupSteps.length > 0) {
+    report += '🔍 <b>Поиск по базам данных:</b>\n';
+    for (const step of result.lookupSteps) {
+      if (step.status === 'found') {
+        report += `• <b>${step.sourceName}:</b> ✅ Найдено\n  ↳ <i>«${step.resultName}»</i>\n`;
+      } else if (step.status === 'not_found') {
+        report += `• <b>${step.sourceName}:</b> ❌ <i>Не найден</i>\n`;
+      } else if (step.status === 'error') {
+        report += `• <b>${step.sourceName}:</b> ⚠️ <i>Ошибка связи (${step.details || 'таймаут'})</i>\n`;
+      }
+    }
+    report += '\n';
+  }
+
+  // 4. Final summary & action
+  if (result.success && result.matchedItem) {
+    const priceText = result.price ? ` (${result.price} ₽)` : '';
+    report += `✅ <b>Товар сопоставлен:</b> «${result.productName}»${priceText}\n` +
+      `<i>Пункт «${result.matchedItem.text}» в списке покупок отмечен как купленный!</i>`;
+  } else if (result.success && result.isNewItem) {
+    const priceText = result.price ? ` (${result.price} ₽)` : '';
+    report += `✅ <b>Товар добавлен:</b> «${result.productName}»${priceText}\n` +
+      `<i>Добавлен в список покупок и отмечен как купленный!</i>`;
+  } else if (result.productName) {
+    report += `ℹ️ <b>Определён товар:</b> «${result.productName}»\n`;
+  } else {
+    const codePart = scanned.barcode ? `<code>${scanned.barcode}</code>` : 'на фото';
+    report += `⚠️ <b>Причина отсутствия данных:</b>\n` +
+      `Штрихкод ${codePart} не найден в госреестре GS1 Russia, базе barcode-list.ru и открытых каталогах.\n\n` +
+      `💡 <i>Вы можете добавить товар в список обычным текстом или ввести вручную: <code>/scan ${scanned.barcode || '467...'} [цена]</code></i>`;
+  }
+
+  return report;
 }

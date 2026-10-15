@@ -32,6 +32,7 @@ import { parseMessage, parseVoiceWithGemini, extractQuantity } from './parser.js
 import {
   recognizeBarcodeAndProductFromImage,
   processScannedProduct,
+  formatBarcodeScanReport,
 } from './barcode.js';
 import {
   buildListKeyboard,
@@ -549,36 +550,14 @@ bot.command('scan', async (ctx) => {
     price: price && !isNaN(price) && price > 0 ? price : null,
   });
 
-  if (scanned.success && scanned.matchedItem) {
-    const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+  const reportText = formatBarcodeScanReport(
+    { barcode, productName: null, price: price && !isNaN(price) && price > 0 ? price : null },
+    scanned
+  );
+  await ctx.reply(reportText, { parse_mode: 'HTML' });
+
+  if (scanned.success) {
     await sendOrUpdateList(ctx, 'shopping');
-    const notice = await ctx.reply(
-      `✅ <b>Штрихкод найден:</b> «${scanned.productName}»${priceInfo}\n` +
-      `<i>Пункт «${scanned.matchedItem.text}» отмечен как купленный!</i>`,
-      { parse_mode: 'HTML' }
-    );
-    setTimeout(async () => {
-      try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
-    }, 4000);
-  } else if (scanned.success && scanned.isNewItem) {
-    const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
-    await sendOrUpdateList(ctx, 'shopping');
-    const notice = await ctx.reply(
-      `✅ <b>Товар добавлен сканером:</b> «${scanned.productName}»${priceInfo}\n` +
-      `<i>Добавлен в список покупок и отмечен как купленный!</i>`,
-      { parse_mode: 'HTML' }
-    );
-    setTimeout(async () => {
-      try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
-    }, 4000);
-  } else {
-    const failNotice = await ctx.reply(
-      `⚠️ Штрихкод <code>${barcode}</code> не найден в базах. Вы можете добавить товар вручную.`,
-      { parse_mode: 'HTML' }
-    );
-    setTimeout(async () => {
-      try { await ctx.api.deleteMessage(chatId, failNotice.message_id); } catch {}
-    }, 4000);
   }
 });
 
@@ -1043,55 +1022,22 @@ bot.on('message:photo', async (ctx) => {
     try { await ctx.api.deleteMessage(chatId, statusMsg.message_id); } catch {}
     try { await ctx.deleteMessage(); } catch {}
 
-    if (result.success && result.matchedItem) {
-      const priceInfo = result.price ? ` (${result.price} ₽)` : '';
+    // Send persistent, detailed diagnostic report
+    const reportText = formatBarcodeScanReport(scanned, result);
+    await ctx.reply(reportText, { parse_mode: 'HTML' });
+
+    // Update active shopping list card below the report
+    if (result.success) {
       await sendOrUpdateList(ctx, 'shopping');
-
-      const notice = await ctx.reply(
-        `✅ <b>Штрихкод считан:</b> «${result.productName}»${priceInfo}\n` +
-        `<i>Пункт «${result.matchedItem.text}» отмечен как купленный!</i>`,
-        { parse_mode: 'HTML' }
-      );
-      setTimeout(async () => {
-        try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
-      }, 4000);
-    } else if (result.success && result.isNewItem) {
-      const priceInfo = result.price ? ` (${result.price} ₽)` : '';
-      await sendOrUpdateList(ctx, 'shopping');
-
-      const notice = await ctx.reply(
-        `✅ <b>Товар добавлен сканером:</b> «${result.productName}»${priceInfo}\n` +
-        `<i>Добавлен в список покупок и отмечен как купленный!</i>`,
-        { parse_mode: 'HTML' }
-      );
-      setTimeout(async () => {
-        try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
-      }, 4000);
-    } else {
-      const failDetails = scanned.barcode
-        ? `Штрихкод найден (<code>${scanned.barcode}</code>), но название не удалось найти ни в одной базе данных.`
-        : 'Штрихкод или упаковка товара на фото не распознаны (возможно, размыто или бликует).';
-
-      const failNotice = await ctx.reply(
-        `⚠️ <b>Не удалось определить товар:</b>\n${failDetails}\n\n` +
-        `💡 <i>Попробуйте сфотографировать товар так, чтобы в кадр попадала лицевая сторона с названием или ценник, либо введите штрихкод цифрами: <code>/scan ${scanned.barcode || '460...'}</code></i>`,
-        { parse_mode: 'HTML' }
-      );
-      setTimeout(async () => {
-        try { await ctx.api.deleteMessage(chatId, failNotice.message_id); } catch {}
-      }, 25000);
     }
   } catch (err: any) {
     console.error('Error handling photo message:', err);
     try { await ctx.api.deleteMessage(chatId, statusMsg.message_id); } catch {}
     try { await ctx.deleteMessage(); } catch {}
-    const errNotice = await ctx.reply(
-      `❌ <b>Ошибка распознавания фото:</b> <code>${err?.message || err}</code>\n\n<i>Проверьте логи бота или валидность GEMINI_API_KEY на сервере.</i>`,
+    await ctx.reply(
+      `❌ <b>Ошибка распознавания фото:</b> <code>${err?.message || err}</code>\n\n<i>Проверьте логи бота или отправьте номер штрихкода вручную: /scan [код]</i>`,
       { parse_mode: 'HTML' }
     );
-    setTimeout(async () => {
-      try { await ctx.api.deleteMessage(chatId, errNotice.message_id); } catch {}
-    }, 20000);
   }
 });
 

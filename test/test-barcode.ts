@@ -179,6 +179,17 @@ async function run() {
   }
   console.log('✅ Passed: processScannedProduct respected autoAdd: false option');
 
+  // Verify formatBarcodeScanReport
+  const { formatBarcodeScanReport } = await import('../src/barcode.js');
+  const sampleReport = formatBarcodeScanReport(
+    { barcode: '4670082523924', productName: 'Лакомство Dreamies', price: 140 },
+    scanNew
+  );
+  if (!sampleReport.includes('4670082523924') || !sampleReport.includes('Отчёт')) {
+    throw new Error('Expected formatBarcodeScanReport to contain barcode and report header');
+  }
+  console.log('✅ Passed: formatBarcodeScanReport generated clean diagnostic report');
+
   // Clean up
   await closeActiveList(testChatId);
 
