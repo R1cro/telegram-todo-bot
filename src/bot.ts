@@ -24,6 +24,7 @@ import {
   recordBotUserActivity,
   recordBotGroupMembership,
   getBotAuditData,
+  clearProductCatalog,
   type Category,
   type TodoItem,
   type CategoryStats,
@@ -91,8 +92,8 @@ bot.use(async (ctx, next) => {
     return next();
   }
 
-  // Allow /audit for administrators in private chat
-  if (text.startsWith('/audit') && ctx.from && config.adminUserIds.includes(ctx.from.id)) {
+  // Allow /audit and /clearcatalog for administrators in private chat
+  if ((text.startsWith('/audit') || text.startsWith('/clearcatalog')) && ctx.from && config.adminUserIds.includes(ctx.from.id)) {
     return next();
   }
 
@@ -191,6 +192,22 @@ bot.command('audit', async (ctx) => {
     }
   }
   if (chunk) await ctx.reply(chunk);
+});
+
+bot.command('clearcatalog', async (ctx) => {
+  if (ctx.chat.type !== 'private' || !ctx.from || !config.adminUserIds.includes(ctx.from.id)) {
+    await ctx.reply('Команда доступна администратору бота в личном чате.');
+    return;
+  }
+
+  const { deleted, reseeded } = await clearProductCatalog(true);
+  await ctx.reply(
+    `🧹 <b>Локальная база товаров очищена!</b>\n\n` +
+    `• Удалено кэшированных записей: <b>${deleted}</b>\n` +
+    `• Восстановлен стартовый каталог: <b>${reseeded}</b> товаров\n\n` +
+    `<i>При следующем сканировании бот будет заново запрашивать реестры GS1 Russia и онлайн-базы.</i>`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 interface PendingEdit {

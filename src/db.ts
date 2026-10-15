@@ -224,6 +224,27 @@ async function seedStarterCatalogIfEmpty(db: Client): Promise<void> {
 }
 
 /**
+ * Clears the local product catalog table.
+ * If reseed is true, resets it back to the initial starter catalog.
+ */
+export async function clearProductCatalog(reseed: boolean = false): Promise<{ deleted: number; reseeded: number }> {
+  const db = getDb();
+  const countRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
+  const deleted = Number(countRes.rows[0]?.cnt || 0);
+
+  await db.execute('DELETE FROM products_catalog');
+
+  let reseeded = 0;
+  if (reseed) {
+    await seedStarterCatalogIfEmpty(db);
+    const afterRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
+    reseeded = Number(afterRes.rows[0]?.cnt || 0);
+  }
+
+  return { deleted, reseeded };
+}
+
+/**
  * Retrieves or registers user/chat preferences.
  */
 export async function getOrCreateUser(
