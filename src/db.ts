@@ -463,6 +463,14 @@ export async function updateItemText(
     args: [clean, itemId, chatId],
   });
 
+  // If item has a barcode, update catalog so it is remembered permanently
+  try {
+    const item = await getItemById(chatId, itemId);
+    if (item?.barcode) {
+      await saveOrUpdateProductCatalog(item.barcode, clean, item.price);
+    }
+  } catch {}
+
   return res.rowsAffected > 0;
 }
 

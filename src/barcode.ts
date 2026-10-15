@@ -69,37 +69,101 @@ export async function lookupBarcodeOnline(
     }
   }
 
-  // 2. Query Open Food Facts API with timeout
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+  // 2. Query Open Food Facts, Open Products Facts, and Open Beauty Facts APIs
+  const apiHosts = [
+    'world.openfoodfacts.org',
+    'world.openproductsfacts.org',
+    'world.openbeautyfacts.org',
+  ];
 
-    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${cleanBarcode}.json`, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'TelegramTodoShoppingBot/1.0 (https://github.com/R1cro/telegram-todo-bot)',
-      },
-    });
-    clearTimeout(timeout);
+  for (const host of apiHosts) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
 
-    if (res.ok) {
-      const data = (await res.json()) as any;
-      if (data && data.status === 1 && data.product) {
-        const prod = data.product;
-        const name =
-          prod.product_name_ru ||
-          prod.product_name ||
-          prod.generic_name_ru ||
-          prod.generic_name;
+      const res = await fetch(`https://${host}/api/v2/product/${cleanBarcode}.json`, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'TelegramTodoShoppingBot/1.0 (https://github.com/R1cro/telegram-todo-bot)',
+        },
+      });
+      clearTimeout(timeout);
 
-        if (name && typeof name === 'string' && name.trim().length > 0) {
-          const brand = prod.brands ? `${prod.brands} ` : '';
-          return { name: `${brand}${name}`.trim() };
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        if (data && data.status === 1 && data.product) {
+          const prod = data.product;
+          const name =
+            prod.product_name_ru ||
+            prod.product_name ||
+            prod.generic_name_ru ||
+            prod.generic_name;
+
+          if (name && typeof name === 'string' && name.trim().length > 0) {
+            const brand = prod.brands ? `${prod.brands} ` : '';
+            return { name: `${brand}${name}`.trim() };
+          }
         }
       }
+    } catch {
+      // Timeout or network failure on this host, safely try next
     }
-  } catch {
-    // Online lookup timeout or network failure, safely fall back
+  }
+
+  return null;
+}
+
+/**
+ * Looks up real product information using Gemini AI with Google Search Grounding.
+ * Searches Google in real-time across retail stores, marketplaces, and registries.
+ */
+export async function lookupBarcodeWithGeminiSearch(
+  barcode: string
+): Promise<{ name?: string; price?: number } | null> {
+  if (!config.geminiApiKey || !config.isAiEnabled) return null;
+
+  try {
+    const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
+    const response = await client.models.generateContent({
+      model: config.geminiModel,
+      contents: `You are an expert retail product identification assistant for Russia, CIS, and international consumer goods.
+Identify the real commercial product with barcode/EAN-13 "${barcode}".
+Search Google for this exact barcode across stores (Perekrestok, Magnit, Ozon, Wildberries, VkusVill, Checko, etc.).
+Return strictly valid JSON with no markdown formatting:
+{"productName": string | null, "price": number | null}`,
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
+
+    const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const cleanJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+    if (cleanJson) {
+      const parsed = JSON.parse(cleanJson);
+      if (parsed.productName && typeof parsed.productName === 'string' && parsed.productName.trim().length > 0) {
+        return {
+          name: parsed.productName.trim(),
+          price: typeof parsed.price === 'number' && parsed.price > 0 ? parsed.price : undefined,
+        };
+      }
+    }
+  } catch (err) {
+    // If search tool fails, fallback to direct generative knowledge lookup
+    try {
+      const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
+      const fallbackResp = await client.models.generateContent({
+        model: config.geminiModel,
+        contents: `What retail consumer product in Russia corresponds to barcode "${barcode}"? Return only valid JSON: {"productName": string | null}`,
+      });
+      const fText = fallbackResp.text || fallbackResp.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const fJson = fText.replace(/```json/gi, '').replace(/```/g, '').trim();
+      if (fJson) {
+        const parsed = JSON.parse(fJson);
+        if (parsed.productName && typeof parsed.productName === 'string' && parsed.productName.trim().length > 0) {
+          return { name: parsed.productName.trim() };
+        }
+      }
+    } catch {}
   }
 
   return null;
@@ -249,11 +313,18 @@ export async function processScannedProduct(
       if (finalPrice === null && localCatalog.price) finalPrice = localCatalog.price;
     }
 
-    // 2. Query online if name is still missing
+    // 2. Query open databases if name is still missing
     if (!finalName) {
       const online = await lookupBarcodeOnline(cleanBarcode);
       if (online?.name) finalName = online.name;
       if (finalPrice === null && online?.price) finalPrice = online.price;
+    }
+
+    // 2.5. Query Gemini with Google Search if still missing
+    if (!finalName) {
+      const geminiFound = await lookupBarcodeWithGeminiSearch(cleanBarcode);
+      if (geminiFound?.name) finalName = geminiFound.name;
+      if (finalPrice === null && geminiFound?.price) finalPrice = geminiFound.price;
     }
 
     // 3. Fallback name if still missing
