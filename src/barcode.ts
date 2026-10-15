@@ -69,7 +69,19 @@ export async function lookupBarcodeOnline(
     }
   }
 
-  // 2. Query Open Food Facts, Open Products Facts, and Open Beauty Facts APIs
+  // 2. Query official GS1 Russia registry (id.gs1ru.org)
+  const gs1Result = await lookupGs1Russia(cleanBarcode);
+  if (gs1Result && gs1Result.name) {
+    return gs1Result;
+  }
+
+  // 3. Query Barcode-list.ru (crowdsourced/retailer Russian database)
+  const barcodeListResult = await lookupBarcodeListRu(cleanBarcode);
+  if (barcodeListResult && barcodeListResult.name) {
+    return barcodeListResult;
+  }
+
+  // 4. Query Open Food Facts, Open Products Facts, and Open Beauty Facts APIs
   const apiHosts = [
     'world.openfoodfacts.org',
     'world.openproductsfacts.org',
@@ -110,7 +122,7 @@ export async function lookupBarcodeOnline(
     }
   }
 
-  // 3. Query UPCitemdb database API
+  // 5. Query UPCitemdb database API
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
@@ -134,6 +146,73 @@ export async function lookupBarcodeOnline(
     }
   } catch {}
 
+  return null;
+}
+
+/**
+ * Queries GS1 Russia official national registry (id.gs1ru.org).
+ */
+export async function lookupGs1Russia(barcode: string): Promise<{ name?: string } | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+
+    const res = await fetch(`https://id.gs1ru.org/id/gtin/${barcode}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const html = await res.text();
+      const nameMatch = html.match(/class=["']product-card__header-product-name["'][^>]*>[\s\S]*?<span>([\s\S]*?)<\/span>/i);
+      if (nameMatch && nameMatch[1]) {
+        const rawName = nameMatch[1].trim();
+        const brandMatch = html.match(/class=["']product-card__header-brand["'][^>]*>([\s\S]*?)<\/p>/i);
+        const brand = brandMatch && brandMatch[1] ? brandMatch[1].trim() : '';
+
+        if (rawName && rawName.length > 0) {
+          const fullName = brand && !rawName.toLowerCase().includes(brand.toLowerCase())
+            ? `${brand} ${rawName}`
+            : rawName;
+          return { name: fullName };
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Queries Barcode-list.ru Russian barcode database.
+ */
+export async function lookupBarcodeListRu(barcode: string): Promise<{ name?: string } | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+
+    const res = await fetch(`https://barcode-list.ru/barcode/RU/%D0%9F%D0%BE%D0%B8%D1%81%D0%BA.htm?barcode=${barcode}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const html = await res.text();
+      const rowMatch = html.match(/<tr[^>]*>\s*<td[^>]*>\s*\d+\s*<\/td>\s*<td[^>]*>[\d\s]+<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>/i);
+      if (rowMatch && rowMatch[1]) {
+        const rawName = rowMatch[1].replace(/<[^>]+>/g, '').trim();
+        if (rawName && rawName.length > 1 && !rawName.includes('Поиск:')) {
+          return { name: rawName };
+        }
+      }
+    }
+  } catch {}
   return null;
 }
 

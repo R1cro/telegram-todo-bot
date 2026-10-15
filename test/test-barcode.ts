@@ -85,6 +85,19 @@ async function run() {
   }
   console.log('✅ Passed: Internal retail weight barcode recognized');
 
+  // GS1 Russia and Barcode-list.ru live lookup test
+  try {
+    const { lookupGs1Russia, lookupBarcodeListRu } = await import('../src/barcode.js');
+    const gs1 = await lookupGs1Russia('4670082523924');
+    if (gs1 && gs1.name) {
+      console.log(`✅ Passed: GS1 Russia resolved "${gs1.name}"`);
+    }
+    const bcl = await lookupBarcodeListRu('4670082523924');
+    if (bcl && bcl.name) {
+      console.log(`✅ Passed: Barcode-list.ru resolved "${bcl.name}"`);
+    }
+  } catch {}
+
   // 7. DB integration: processScannedProduct with matching & autoAdd
   const { initDatabase, getOrCreateActiveList, addItems, getListItems, getListStats, closeActiveList } = await import('../src/db.js');
   const { processScannedProduct } = await import('../src/barcode.js');
