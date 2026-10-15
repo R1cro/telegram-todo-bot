@@ -1005,6 +1005,18 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
 bot.on('message:photo', async (ctx) => {
   const chatId = ctx.chat.id;
 
+  if (!config.isAiEnabled || !config.geminiApiKey) {
+    try { await ctx.deleteMessage(); } catch {}
+    await ctx.reply(
+      '⚠️ <b>Распознавание по фото отключено:</b>\n\n' +
+      'На сервере в файле <code>.env</code> не указан <code>GEMINI_API_KEY</code>.\n' +
+      'Получите бесплатный ключ на <a href="https://aistudio.google.com/app/apikey">aistudio.google.com</a>, впишите его в <code>.env</code> и перезапустите бота.\n\n' +
+      '<i>Без API ключа вы можете сканировать штрихкод камерой через кнопку сканера или отправить номер: <code>/scan 4600605021234</code>.</i>',
+      { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+    );
+    return;
+  }
+
   // Show immediate progress status message
   const statusMsg = await ctx.reply('📷 <i>Анализирую фото: поиск штрихкода, товара и ценника...</i>', {
     parse_mode: 'HTML',
@@ -1056,25 +1068,30 @@ bot.on('message:photo', async (ctx) => {
         try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
       }, 4000);
     } else {
+      const failDetails = scanned.barcode
+        ? `Штрихкод найден (<code>${scanned.barcode}</code>), но название не удалось найти ни в одной базе данных.`
+        : 'Штрихкод или упаковка товара на фото не распознаны (возможно, размыто или бликует).';
+
       const failNotice = await ctx.reply(
-        '⚠️ <b>Не удалось распознать штрихкод или товар на фото.</b>\n<i>Попробуйте сфотографировать штрихкод крупнее при хорошем освещении или введите цифры: <code>/scan 460...</code></i>',
+        `⚠️ <b>Не удалось определить товар:</b>\n${failDetails}\n\n` +
+        `💡 <i>Попробуйте сфотографировать товар так, чтобы в кадр попадала лицевая сторона с названием или ценник, либо введите штрихкод цифрами: <code>/scan ${scanned.barcode || '460...'}</code></i>`,
         { parse_mode: 'HTML' }
       );
       setTimeout(async () => {
         try { await ctx.api.deleteMessage(chatId, failNotice.message_id); } catch {}
-      }, 5000);
+      }, 25000);
     }
   } catch (err: any) {
     console.error('Error handling photo message:', err);
     try { await ctx.api.deleteMessage(chatId, statusMsg.message_id); } catch {}
     try { await ctx.deleteMessage(); } catch {}
     const errNotice = await ctx.reply(
-      `❌ <b>Ошибка распознавания:</b> <code>${err?.message || err}</code>`,
+      `❌ <b>Ошибка распознавания фото:</b> <code>${err?.message || err}</code>\n\n<i>Проверьте логи бота или валидность GEMINI_API_KEY на сервере.</i>`,
       { parse_mode: 'HTML' }
     );
     setTimeout(async () => {
       try { await ctx.api.deleteMessage(chatId, errNotice.message_id); } catch {}
-    }, 4000);
+    }, 20000);
   }
 });
 

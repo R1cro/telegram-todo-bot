@@ -146,48 +146,59 @@ export async function lookupBarcodeWithGeminiSearch(
 ): Promise<{ name?: string; price?: number } | null> {
   if (!config.geminiApiKey || !config.isAiEnabled) return null;
 
-  try {
-    const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
-    const response = await client.models.generateContent({
-      model: config.geminiModel,
-      contents: `You are an expert retail product identification assistant for Russia, CIS, and international consumer goods.
+  const candidateModels = Array.from(
+    new Set([
+      config.geminiModel,
+      'gemini-2.5-flash',
+      'gemini-1.5-flash',
+      'gemini-2.0-flash',
+    ].filter(Boolean))
+  );
+
+  for (const model of candidateModels) {
+    try {
+      const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
+      const response = await client.models.generateContent({
+        model,
+        contents: `You are an expert retail product identification assistant for Russia, CIS, and international consumer goods.
 Identify the real commercial product with barcode/EAN-13 "${barcode}".
 Search Google for this exact barcode across stores (Perekrestok, Magnit, Ozon, Wildberries, VkusVill, Checko, etc.).
 Return strictly valid JSON with no markdown formatting:
 {"productName": string | null, "price": number | null}`,
-      config: {
-        tools: [{ googleSearch: {} }],
-      },
-    });
-
-    const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    const cleanJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-    if (cleanJson) {
-      const parsed = JSON.parse(cleanJson);
-      if (parsed.productName && typeof parsed.productName === 'string' && parsed.productName.trim().length > 0) {
-        return {
-          name: parsed.productName.trim(),
-          price: typeof parsed.price === 'number' && parsed.price > 0 ? parsed.price : undefined,
-        };
-      }
-    }
-  } catch (err) {
-    // If search tool fails, fallback to direct generative knowledge lookup
-    try {
-      const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
-      const fallbackResp = await client.models.generateContent({
-        model: config.geminiModel,
-        contents: `What retail consumer product in Russia corresponds to barcode "${barcode}"? Return only valid JSON: {"productName": string | null}`,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
       });
-      const fText = fallbackResp.text || fallbackResp.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const fJson = fText.replace(/```json/gi, '').replace(/```/g, '').trim();
-      if (fJson) {
-        const parsed = JSON.parse(fJson);
+
+      const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const cleanJson = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      if (cleanJson) {
+        const parsed = JSON.parse(cleanJson);
         if (parsed.productName && typeof parsed.productName === 'string' && parsed.productName.trim().length > 0) {
-          return { name: parsed.productName.trim() };
+          return {
+            name: parsed.productName.trim(),
+            price: typeof parsed.price === 'number' && parsed.price > 0 ? parsed.price : undefined,
+          };
         }
       }
-    } catch {}
+    } catch (err) {
+      // If search tool fails, fallback to direct generative knowledge lookup
+      try {
+        const client = new GoogleGenAI({ apiKey: config.geminiApiKey });
+        const fallbackResp = await client.models.generateContent({
+          model,
+          contents: `What retail consumer product in Russia corresponds to barcode "${barcode}"? Return only valid JSON: {"productName": string | null}`,
+        });
+        const fText = fallbackResp.text || fallbackResp.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const fJson = fText.replace(/```json/gi, '').replace(/```/g, '').trim();
+        if (fJson) {
+          const parsed = JSON.parse(fJson);
+          if (parsed.productName && typeof parsed.productName === 'string' && parsed.productName.trim().length > 0) {
+            return { name: parsed.productName.trim() };
+          }
+        }
+      } catch {}
+    }
   }
 
   return null;
@@ -217,10 +228,17 @@ Return strictly valid JSON with no markdown formatting, matching this schema:
 {"barcode": string | null, "productName": string | null, "price": number | null}`;
 
   try {
-    const candidateModels = [config.geminiModel, 'gemini-3.8-flash', 'gemini-3.5-flash'];
-    const uniqueModels = Array.from(new Set(candidateModels));
+    const candidateModels = Array.from(
+      new Set([
+        config.geminiModel,
+        'gemini-2.5-flash',
+        'gemini-1.5-flash',
+        'gemini-2.0-flash',
+        'gemini-3.8-flash',
+      ].filter(Boolean))
+    );
 
-    for (const model of uniqueModels) {
+    for (const model of candidateModels) {
       try {
         const response = await client.models.generateContent({
           model,
