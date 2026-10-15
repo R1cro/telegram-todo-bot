@@ -110,6 +110,30 @@ export async function lookupBarcodeOnline(
     }
   }
 
+  // 3. Query UPCitemdb database API
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${cleanBarcode}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'TelegramTodoShoppingBot/1.0',
+      },
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      if (data && data.code === 'OK' && Array.isArray(data.items) && data.items.length > 0) {
+        const item = data.items[0];
+        const title = item.title || item.description;
+        if (title && typeof title === 'string' && title.trim().length > 0) {
+          const brand = item.brand && !title.toLowerCase().includes(item.brand.toLowerCase()) ? `${item.brand} ` : '';
+          return { name: `${brand}${title}`.trim() };
+        }
+      }
+    }
+  } catch {}
+
   return null;
 }
 
