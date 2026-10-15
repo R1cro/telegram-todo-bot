@@ -2,24 +2,14 @@ import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
- * Formats button text with trailing non-breaking spaces and an invisible Braille pattern blank
- * so Telegram clients position the checkbox icon and item text aligned to the left.
+ * Formats button text, truncating if too long for the inline keyboard row.
  */
-function formatItemButtonText(icon: string, text: string): string {
-  const maxDisplayLen = 27;
-  const targetPadLen = 30;
-
+function formatItemButtonText(text: string, isFullWidth = false): string {
+  const maxDisplayLen = isFullWidth ? 35 : 22;
   const cleanText = text.length > maxDisplayLen
     ? text.substring(0, maxDisplayLen - 1).trim() + '…'
     : text;
-
-  const currentLen = cleanText.length + 2; // icon + space
-  const padCount = Math.max(0, Math.round((targetPadLen - currentLen) * 1.3));
-
-  if (padCount > 0) {
-    return `${icon} ${cleanText}${'\u00A0'.repeat(padCount)}\u2800`;
-  }
-  return `${icon} ${cleanText}`;
+  return cleanText;
 }
 
 /**
@@ -51,25 +41,29 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 2. Interactive item buttons (clickable to toggle check/uncheck status)
+  // 2. Interactive item buttons (clickable to toggle status and adjust quantity)
   if (items.length > 0) {
     // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
-      const icon = item.is_done ? '✅' : '⬜';
       const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
-      const buttonText = formatItemButtonText(icon, `${item.text}${qtySuffix}`);
-      keyboard.text(buttonText, `toggle:${item.id}`).row();
 
-      // Show counter component (- / +) and edit button for active items
-      if (!item.is_done) {
-        const qty = item.quantity || 1;
+      if (item.is_done) {
+        // Completed items: full-width button with green success style and no checkbox icon
+        const buttonText = formatItemButtonText(`${item.text}${qtySuffix}`, true);
+        keyboard.add({
+          text: buttonText,
+          callback_data: `toggle:${item.id}`,
+          style: 'success',
+        }).row();
+      } else {
+        // Active items: item title button and +/- controls in ONE row without checkbox icon
+        const buttonText = formatItemButtonText(`${item.text}${qtySuffix}`, false);
         keyboard
+          .text(buttonText, `toggle:${item.id}`)
           .text('➖', `qty_dec:${item.id}`)
-          .text(`${qty} шт.`, `noop`)
           .text('➕', `qty_inc:${item.id}`)
-          .text('✏️ Правка', `edit_item:${item.id}`)
           .row();
       }
     }
@@ -84,6 +78,7 @@ export function buildListKeyboard(
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
       .text('📋 Текстом', `export:${category}`)
+      .text('✏️ Правка', `prompt_edit:${category}`)
       .row();
   }
 

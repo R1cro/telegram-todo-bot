@@ -67,14 +67,14 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
 
   let text = header;
   items.forEach((item, index) => {
-    const icon = item.is_done ? '✅' : '⬜';
+    const icon = item.is_done ? '🟢' : '▫️';
     const num = `${index + 1}.`;
     const qtyText = item.quantity && item.quantity > 1
       ? ` — <b>${item.quantity} шт.</b>`
-      : (category === 'shopping' ? ` — <b>${item.quantity || 1} шт.</b>` : '');
+      : '';
 
     if (item.is_done) {
-      text += `<s>${icon} ${num} ${item.text}${qtyText ? ` (${item.quantity || 1} шт.)` : ''}</s>\n\n`;
+      text += `<s>${icon} ${num} ${item.text}${item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : ''}</s>\n\n`;
     } else {
       text += `${icon} ${num} <b>${item.text}</b>${qtyText}\n\n`;
     }
@@ -381,6 +381,11 @@ bot.on('message:text', async (ctx) => {
     }
   }
 
+  // Send immediate feedback message so user knows text is received and being processed
+  const statusMsg = await ctx.reply('⏳ <i>Запрос принят, обрабатываю...</i>', {
+    parse_mode: 'HTML',
+  });
+
   await ctx.replyWithChatAction('typing');
 
   // Keep chat action "typing" active while AI request or retries are processing
@@ -390,12 +395,21 @@ bot.on('message:text', async (ctx) => {
 
   let parsedItems;
   try {
-    parsedItems = await parseMessage(rawText, user.active_category);
+    parsedItems = await parseMessage(rawText, user.active_category, async (progressText) => {
+      try {
+        await ctx.api.editMessageText(chatId, statusMsg.message_id, progressText, { parse_mode: 'HTML' });
+      } catch {}
+    });
   } finally {
     clearInterval(typingTimer);
   }
 
-  if (parsedItems.length === 0) {
+  // Delete status feedback message upon completion
+  try {
+    await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+  } catch {}
+
+  if (!parsedItems || parsedItems.length === 0) {
     if (!isGroup) {
       await ctx.reply('Не удалось распознать пункты. Отправьте список через запятую или построчно.');
     }
@@ -609,10 +623,29 @@ bot.on('callback_query:data', async (ctx) => {
   // Decrement item quantity: qty_dec:<id>
   if (data.startsWith('qty_dec:')) {
     const itemId = Number(data.split(':')[1]);
+    const item = await getItemById(chatId, itemId);
+    if (item && item.quantity <= 1) {
+      await ctx.answerCallbackQuery({ text: 'Количество: 1 шт. (минимум)' });
+      return;
+    }
     const newQty = await updateItemQuantity(chatId, itemId, -1);
     await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
     const user = await getOrCreateUser(chatId);
     await sendOrUpdateList(ctx, user.active_category, messageId);
+    return;
+  }
+
+  // Prompt edit help: prompt_edit:<category>
+  if (data.startsWith('prompt_edit:')) {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      '✏️ <b>Как редактировать пункт списка:</b>\n\n' +
+      'Отправьте сообщение с номером пункта и новым текстом:\n' +
+      '• <code>измени 2 на Сырки 5 шт</code>\n' +
+      '• <code>поменяй 1 на Свежее молоко</code>\n' +
+      '• <code>/edit 3 Хлеб</code>',
+      { parse_mode: 'HTML' }
+    );
     return;
   }
 
@@ -779,7 +812,7 @@ bot.on('callback_query:data', async (ctx) => {
     const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
     let text = `<b>${title}:</b>\n\n`;
     for (const item of items) {
-      const check = item.is_done ? '<s>☑️' : '⬜';
+      const check = item.is_done ? '<s>🟢' : '▫️';
       const end = item.is_done ? '</s>' : '';
       const qtyStr = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
       text += `${check} ${item.text}${qtyStr}${end}\n\n`;
