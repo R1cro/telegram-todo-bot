@@ -5,7 +5,7 @@ import type { Category, TodoItem, CategoryStats } from './db.js';
  * Formats button text, truncating if too long for the inline keyboard row.
  */
 function formatItemButtonText(text: string, isFullWidth = false): string {
-  const maxDisplayLen = isFullWidth ? 35 : 22;
+  const maxDisplayLen = isFullWidth ? 35 : 18;
   const cleanText = text.length > maxDisplayLen
     ? text.substring(0, maxDisplayLen - 1).trim() + '…'
     : text;
@@ -47,22 +47,23 @@ export function buildListKeyboard(
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
-      const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
-
       if (item.is_done) {
         // Completed items: full-width button with green success style and no checkbox icon
-        const buttonText = formatItemButtonText(`${item.text}${qtySuffix}`, true);
+        const doneLabel = item.quantity && item.quantity > 1 ? `${item.text} (${item.quantity} шт.)` : item.text;
+        const buttonText = formatItemButtonText(doneLabel, true);
         keyboard.add({
           text: buttonText,
           callback_data: `toggle:${item.id}`,
           style: 'success',
         }).row();
       } else {
-        // Active items: item title button and +/- controls in ONE row without checkbox icon
-        const buttonText = formatItemButtonText(`${item.text}${qtySuffix}`, false);
+        // Active items: clean title button without duplicated quantity, and -, count, + controls in ONE row
+        const qty = item.quantity || 1;
+        const buttonText = formatItemButtonText(item.text, false);
         keyboard
           .text(buttonText, `toggle:${item.id}`)
           .text('➖', `qty_dec:${item.id}`)
+          .text(`${qty} шт.`, 'noop')
           .text('➕', `qty_inc:${item.id}`)
           .row();
       }
