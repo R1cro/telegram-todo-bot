@@ -4,6 +4,9 @@ import {
   initDatabase,
   getOrCreateUser,
   setUserCategory,
+  setLastListMessageId,
+  getLastListMessageId,
+  isListCompleted,
   addItems,
   getItems,
   toggleItemDone,
@@ -77,6 +80,7 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
+      await setLastListMessageId(chatId, editMessageId);
       return;
     } catch (e: any) {
       // Игнорируем ошибку Telegram "message is not modified"
@@ -86,10 +90,11 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
     }
   }
 
-  await ctx.reply(messageText, {
+  const sent = await ctx.reply(messageText, {
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
+  await setLastListMessageId(chatId, sent.message_id);
 }
 
 // ---------------- КОМАНДЫ ---------------- //
@@ -282,7 +287,23 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
-  // Добавляем в БД
+  const shoppingAdded = parsedItems.filter((i) => i.category === 'shopping');
+  const tasksAdded = parsedItems.filter((i) => i.category === 'task');
+  const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
+
+  // 1. Проверяем состояние текущего списка ДО добавления новых пунктов
+  const existingItems = await getItems(chatId, primaryCategory);
+  const hasIncompleteItems = existingItems.some((i) => !i.is_done);
+  const isCurrentListFinished = existingItems.length > 0 && !hasIncompleteItems;
+
+  // Если текущий список был полностью завершен-выполнен,
+  // то для нового сообщения очищаем старые выполненные пункты и начинаем список заново!
+  if (isCurrentListFinished) {
+    await clearCompletedItems(chatId, primaryCategory);
+    await setLastListMessageId(chatId, null);
+  }
+
+  // 2. Добавляем новые пункты в БД
   await addItems(
     chatId,
     parsedItems.map((p) => ({
@@ -291,9 +312,7 @@ bot.on('message:text', async (ctx) => {
     }))
   );
 
-  // Формируем краткий отчёт о том, что куда попало
-  const shoppingAdded = parsedItems.filter((i) => i.category === 'shopping');
-  const tasksAdded = parsedItems.filter((i) => i.category === 'task');
+  // 3. Формируем краткий отчёт о том, что куда попало
 
   let report = '✅ <b>Добавлено:</b>\n';
   if (shoppingAdded.length > 0) {
@@ -306,11 +325,38 @@ bot.on('message:text', async (ctx) => {
   const parserBadge = parsedItems[0]?.extractedBy === 'ai' ? ' <i>(✨ AI)</i>' : '';
   report += parserBadge;
 
-  await ctx.reply(report, { parse_mode: 'HTML' });
+  // 4. Если текущий список НЕ был завершен (в нем оставались невыполненные пункты),
+  // пробуем ОБНОВИТЬ существующее сообщение со списком выше!
+  let updatedExistingMessage = false;
+  const lastMsgId = await getLastListMessageId(chatId);
 
-  // Показываем актуальный список той категории, куда было добавлено больше всего пунктов
-  const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
-  await sendOrUpdateList(ctx, primaryCategory);
+  if (hasIncompleteItems && lastMsgId) {
+    try {
+      const [updatedItems, stats] = await Promise.all([
+        getItems(chatId, primaryCategory),
+        getStats(chatId),
+      ]);
+      const messageText = renderListMessage(primaryCategory, updatedItems, isGroup);
+      const keyboard = buildListKeyboard(primaryCategory, updatedItems, stats);
+
+      await ctx.api.editMessageText(chatId, lastMsgId, messageText, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+      updatedExistingMessage = true;
+    } catch (e: any) {
+      // Сообщение могло быть удалено пользователем или устареть (>48ч в Telegram)
+      updatedExistingMessage = false;
+    }
+  }
+
+  if (updatedExistingMessage) {
+    report += '\n🔄 <i>Текущий список дополнен и обновлен выше!</i>';
+    await ctx.reply(report, { parse_mode: 'HTML' });
+  } else {
+    await ctx.reply(report, { parse_mode: 'HTML' });
+    await sendOrUpdateList(ctx, primaryCategory);
+  }
 });
 
 // ---------------- CALLBACK QUERY (КНОПКИ) ---------------- //

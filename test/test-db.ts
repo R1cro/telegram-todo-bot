@@ -2,6 +2,9 @@ import {
   initDatabase,
   getOrCreateUser,
   setUserCategory,
+  setLastListMessageId,
+  getLastListMessageId,
+  isListCompleted,
   addItems,
   getItems,
   toggleItemDone,
@@ -60,6 +63,28 @@ async function run() {
   // 8. Финальная проверка количества
   const remainingShopping = await getItems(testChatId, 'shopping');
   console.log(`✅ Осталось покупок: ${remainingShopping.length}`);
+
+  // 9. Тестирование отслеживания ID сообщения списка
+  await setLastListMessageId(testChatId, 12345);
+  const savedMsgId = await getLastListMessageId(testChatId);
+  console.log(`✅ Отслеживание message_id списка: сохранено 12345, получено ${savedMsgId}`);
+
+  // 10. Тестирование проверки завершенности списка (isListCompleted)
+  await clearAllCategoryItems(testChatId, 'shopping');
+  const emptyCheck = await isListCompleted(testChatId, 'shopping');
+  console.log(`✅ Пустой список завершен: ${emptyCheck}`);
+
+  const [idA, idB] = await addItems(testChatId, [
+    { category: 'shopping', text: 'Пункт 1' },
+    { category: 'shopping', text: 'Пункт 2' },
+  ]);
+  const incompleteCheck = await isListCompleted(testChatId, 'shopping');
+  console.log(`✅ Список с невыполненными пунктами НЕ завершен: ${!incompleteCheck}`);
+
+  await toggleItemDone(testChatId, idA);
+  await toggleItemDone(testChatId, idB);
+  const completeCheck = await isListCompleted(testChatId, 'shopping');
+  console.log(`✅ Список со всеми выполненными пунктами завершен: ${completeCheck}`);
 
   // Очистка тестовых данных
   await clearAllCategoryItems(testChatId, 'shopping');

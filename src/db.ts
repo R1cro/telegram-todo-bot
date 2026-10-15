@@ -17,6 +17,7 @@ export interface UserSettings {
   username?: string;
   first_name?: string;
   active_category: Category;
+  last_list_message_id?: number | null;
   created_at: string;
 }
 
@@ -47,9 +48,17 @@ export async function initDatabase(): Promise<void> {
       username TEXT,
       first_name TEXT,
       active_category TEXT NOT NULL DEFAULT 'shopping',
+      last_list_message_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Мягкая миграция: добавляем колонку в существующую базу, если её ещё нет
+  try {
+    await db.execute(`ALTER TABLE users ADD COLUMN last_list_message_id INTEGER`);
+  } catch {
+    // Колонка уже существует
+  }
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS items (
@@ -86,6 +95,9 @@ export async function getOrCreateUser(
       username: row.username ? String(row.username) : undefined,
       first_name: row.first_name ? String(row.first_name) : undefined,
       active_category: (row.active_category as Category) || 'shopping',
+      last_list_message_id: row.last_list_message_id !== null && row.last_list_message_id !== undefined
+        ? Number(row.last_list_message_id)
+        : null,
       created_at: String(row.created_at),
     };
   }
@@ -100,6 +112,7 @@ export async function getOrCreateUser(
     username,
     first_name: firstName,
     active_category: 'shopping',
+    last_list_message_id: null,
     created_at: new Date().toISOString(),
   };
 }
@@ -110,6 +123,32 @@ export async function setUserCategory(chatId: number, category: Category): Promi
     sql: 'UPDATE users SET active_category = ? WHERE chat_id = ?',
     args: [category, chatId],
   });
+}
+
+export async function setLastListMessageId(chatId: number, messageId: number | null): Promise<void> {
+  const db = getDb();
+  await db.execute({
+    sql: 'UPDATE users SET last_list_message_id = ? WHERE chat_id = ?',
+    args: [messageId, chatId],
+  });
+}
+
+export async function getLastListMessageId(chatId: number): Promise<number | null> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: 'SELECT last_list_message_id FROM users WHERE chat_id = ?',
+    args: [chatId],
+  });
+  if (res.rows.length === 0 || res.rows[0].last_list_message_id === null || res.rows[0].last_list_message_id === undefined) {
+    return null;
+  }
+  return Number(res.rows[0].last_list_message_id);
+}
+
+export async function isListCompleted(chatId: number, category: Category): Promise<boolean> {
+  const items = await getItems(chatId, category);
+  if (items.length === 0) return true;
+  return items.every((i) => i.is_done);
 }
 
 export async function addItems(
