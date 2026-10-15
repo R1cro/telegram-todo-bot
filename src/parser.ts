@@ -143,38 +143,55 @@ Instructions:
 User message:
 """${text}"""`;
 
-    const response = await client.models.generateContent({
-      model: config.geminiModel,
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseJsonSchema: {
-          type: Type.OBJECT,
-          properties: {
+    const requestConfig = {
+      responseMimeType: 'application/json',
+      responseJsonSchema: {
+        type: Type.OBJECT,
+        properties: {
+          items: {
+            type: Type.ARRAY,
+            description: 'Extracted todo and shopping items',
             items: {
-              type: Type.ARRAY,
-              description: 'Extracted todo and shopping items',
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  text: {
-                    type: Type.STRING,
-                    description: 'Clean concise item text',
-                  },
-                  category: {
-                    type: Type.STRING,
-                    enum: ['shopping', 'task'],
-                    description: 'Target list category',
-                  },
+              type: Type.OBJECT,
+              properties: {
+                text: {
+                  type: Type.STRING,
+                  description: 'Clean concise item text',
                 },
-                required: ['text', 'category'],
+                category: {
+                  type: Type.STRING,
+                  enum: ['shopping', 'task'],
+                  description: 'Target list category',
+                },
               },
+              required: ['text', 'category'],
             },
           },
-          required: ['items'],
         },
+        required: ['items'],
       },
-    });
+    };
+
+    let response;
+    try {
+      response = await client.models.generateContent({
+        model: config.geminiModel,
+        contents: prompt,
+        config: requestConfig,
+      });
+    } catch (modelErr: any) {
+      const errMsg = String(modelErr?.message || '');
+      if ((errMsg.includes('not found') || errMsg.includes('no longer available')) && config.geminiModel !== 'gemini-3.8-flash') {
+        console.warn(`Model ${config.geminiModel} unavailable, retrying with gemini-3.8-flash...`);
+        response = await client.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: prompt,
+          config: requestConfig,
+        });
+      } else {
+        throw modelErr;
+      }
+    }
 
     if (!response.text) return null;
 
@@ -288,10 +305,11 @@ export async function parseVoiceWithGemini(
         ...requestPayload,
       });
     } catch (modelErr: any) {
-      if (String(modelErr?.message).includes('not found') && config.geminiModel !== 'gemini-1.5-flash') {
-        console.warn(`Model ${config.geminiModel} not found, retrying with gemini-1.5-flash...`);
+      const errMsg = String(modelErr?.message || '');
+      if ((errMsg.includes('not found') || errMsg.includes('no longer available')) && config.geminiModel !== 'gemini-3.8-flash') {
+        console.warn(`Model ${config.geminiModel} unavailable, retrying with gemini-3.8-flash...`);
         response = await client.models.generateContent({
-          model: 'gemini-1.5-flash',
+          model: 'gemini-3.8-flash',
           ...requestPayload,
         });
       } else {
