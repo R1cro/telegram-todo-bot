@@ -46,8 +46,7 @@ export function buildListKeyboard(
     // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
-    for (let index = 0; index < displayItems.length; index++) {
-      const item = displayItems[index];
+    for (const item of displayItems) {
       const title = formatItemButtonText(item.text);
 
       // Row 1: Full-width item title (green success button if completed)
@@ -74,11 +73,6 @@ export function buildListKeyboard(
         callback_data: `del_item:${item.id}`,
         style: 'danger',
       }).row();
-
-      // Row 3: Visual divider between items to clearly separate item cards
-      if (index < displayItems.length - 1) {
-        keyboard.text('┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄', 'noop').row();
-      }
     }
 
     if (items.length > 20) {
