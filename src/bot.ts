@@ -46,8 +46,8 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
 
   if (items.length === 0) {
     const hint = isGroup
-      ? '💡 Отправьте сообщение в группу, чтобы добавить пункты в этот список!'
-      : '💡 Отправьте текст с пунктами (через запятую, с новой строки или фразой), чтобы добавить их сюда!';
+      ? '💡 Отправьте сообщение в группу или запишите голосовое, чтобы добавить пункты!'
+      : '💡 Отправьте текст с пунктами или запишите голосовое, чтобы добавить их сюда!';
     return `${header}<i>Список пока пуст.</i>\n\n${hint}`;
   }
 
@@ -55,8 +55,18 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
   const doneItems = items.filter((i) => i.is_done);
 
   let text = header;
-  text += `Осталось: <b>${activeItems.length}</b> | Выполнено: <b>${doneItems.length}</b>\n\n`;
-  text += `<i>Нажмите на пункт в кнопках ниже, чтобы вычеркнуть или вернуть его.</i>`;
+  items.forEach((item, index) => {
+    const icon = item.is_done ? '✅' : '⬜';
+    const num = `${index + 1}.`;
+    if (item.is_done) {
+      text += `<s>${icon} ${num} ${item.text}</s>\n`;
+    } else {
+      text += `${icon} ${num} <b>${item.text}</b>\n`;
+    }
+  });
+
+  text += `\nОсталось: <b>${activeItems.length}</b> | Выполнено: <b>${doneItems.length}</b>\n\n`;
+  text += `<i>Нажмите на пункт в кнопках ниже, чтобы отметить его:</i>`;
 
   return text;
 }
@@ -101,6 +111,15 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
       if (!String(e?.message).includes('message is not modified')) {
         console.error('Failed to edit message:', e);
       }
+    }
+  }
+
+  // Delete previous list card message if present so there is only ever one active list message
+  if (activeList.last_message_id && activeList.last_message_id !== editMessageId) {
+    try {
+      await ctx.api.deleteMessage(chatId, activeList.last_message_id);
+    } catch {
+      // Previous message may already have been deleted
     }
   }
 
@@ -160,39 +179,41 @@ bot.command('help', async (ctx) => {
 });
 
 bot.command(['list', 'menu'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   await sendOrUpdateList(ctx);
 });
 
 bot.command(['shopping', 'buy'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   await sendOrUpdateList(ctx, 'shopping');
 });
 
 bot.command(['tasks', 'todo'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   await sendOrUpdateList(ctx, 'task');
 });
 
 bot.command('clear', async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
   const user = await getOrCreateUser(chatId);
   const activeList = await getOrCreateActiveList(chatId);
-  const deleted = await clearCompletedFromList(activeList.id, user.active_category);
-
-  const categoryName = user.active_category === 'shopping' ? 'покупок' : 'дел';
-  if (deleted > 0) {
-    await ctx.reply(`🧹 Удалено выполненных пунктов из ${categoryName}: <b>${deleted}</b>`, {
-      parse_mode: 'HTML',
-    });
-  } else {
-    await ctx.reply(`В списке ${categoryName} нет выполненных пунктов для удаления.`);
-  }
-
+  await clearCompletedFromList(activeList.id, user.active_category);
   await sendOrUpdateList(ctx, user.active_category);
 });
 
 bot.command(['close', 'finish'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
   const activeList = await getOrCreateActiveList(chatId);
   const stats = await getListStats(activeList.id);
+
+  // Delete previous active list card on close
+  if (activeList.last_message_id) {
+    try {
+      await ctx.api.deleteMessage(chatId, activeList.last_message_id);
+    } catch {}
+  }
 
   await closeActiveList(chatId);
 
@@ -306,6 +327,13 @@ bot.on('message:text', async (ctx) => {
     return;
   }
 
+  // Delete incoming user text message to keep chat history clean
+  try {
+    await ctx.deleteMessage();
+  } catch {
+    // Ignore permissions failure in groups
+  }
+
   // Always append items to the currently active list entity
   const activeList = await getOrCreateActiveList(chatId);
 
@@ -322,45 +350,8 @@ bot.on('message:text', async (ctx) => {
   const tasksAdded = parsedItems.filter((i) => i.category === 'task');
   const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
 
-  let report = '✅ <b>Добавлено:</b>\n';
-  if (shoppingAdded.length > 0) {
-    report += `🛒 В покупки (${shoppingAdded.length}): <i>${shoppingAdded.map((i) => i.text).join(', ')}</i>\n`;
-  }
-  if (tasksAdded.length > 0) {
-    report += `📝 В дела (${tasksAdded.length}): <i>${tasksAdded.map((i) => i.text).join(', ')}</i>\n`;
-  }
-
-  const parserBadge = parsedItems[0]?.extractedBy === 'ai' ? ' <i>(✨ AI)</i>' : '';
-  report += parserBadge;
-
-  // If the active list already had an open Telegram card message, edit it in-place
-  let updatedExistingMessage = false;
-  if (activeList.last_message_id) {
-    try {
-      const [updatedItems, stats] = await Promise.all([
-        getListItems(activeList.id, primaryCategory),
-        getListStats(activeList.id),
-      ]);
-      const messageText = renderListMessage(primaryCategory, updatedItems, isGroup);
-      const keyboard = buildListKeyboard(primaryCategory, updatedItems, stats);
-
-      await ctx.api.editMessageText(chatId, activeList.last_message_id, messageText, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      updatedExistingMessage = true;
-    } catch (e: any) {
-      updatedExistingMessage = false;
-    }
-  }
-
-  if (updatedExistingMessage) {
-    report += '\n🔄 <i>Текущий список дополнен и обновлен выше!</i>';
-    await ctx.reply(report, { parse_mode: 'HTML' });
-  } else {
-    await ctx.reply(report, { parse_mode: 'HTML' });
-    await sendOrUpdateList(ctx, primaryCategory);
-  }
+  // Automatically delete old list card and send the fresh updated list at the bottom
+  await sendOrUpdateList(ctx, primaryCategory);
 });
 
 // ---------------- VOICE AND AUDIO MESSAGE PROCESSING ---------------- //
@@ -419,6 +410,13 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
       return;
     }
 
+    // Delete incoming voice message to keep chat history clean
+    try {
+      await ctx.deleteMessage();
+    } catch {
+      // Ignore permissions failure in groups
+    }
+
     // Always append items to the currently active list entity
     const activeList = await getOrCreateActiveList(chatId);
 
@@ -435,43 +433,8 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     const tasksAdded = voiceResult.items.filter((i) => i.category === 'task');
     const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
 
-    let report = `🎙 <i>«${voiceResult.transcript}»</i>\n\n`;
-    report += '✅ <b>Добавлено из голоса (✨ AI):</b>\n';
-    if (shoppingAdded.length > 0) {
-      report += `🛒 В покупки (${shoppingAdded.length}): <i>${shoppingAdded.map((i) => i.text).join(', ')}</i>\n`;
-    }
-    if (tasksAdded.length > 0) {
-      report += `📝 В дела (${tasksAdded.length}): <i>${tasksAdded.map((i) => i.text).join(', ')}</i>\n`;
-    }
-
-    // If the active list already had an open Telegram card message, edit it in-place
-    let updatedExistingMessage = false;
-    if (activeList.last_message_id) {
-      try {
-        const [updatedItems, stats] = await Promise.all([
-          getListItems(activeList.id, primaryCategory),
-          getListStats(activeList.id),
-        ]);
-        const messageText = renderListMessage(primaryCategory, updatedItems, isGroup);
-        const keyboard = buildListKeyboard(primaryCategory, updatedItems, stats);
-
-        await ctx.api.editMessageText(chatId, activeList.last_message_id, messageText, {
-          parse_mode: 'HTML',
-          reply_markup: keyboard,
-        });
-        updatedExistingMessage = true;
-      } catch (e: any) {
-        updatedExistingMessage = false;
-      }
-    }
-
-    if (updatedExistingMessage) {
-      report += '\n🔄 <i>Текущий список дополнен и обновлен выше!</i>';
-      await ctx.reply(report, { parse_mode: 'HTML' });
-    } else {
-      await ctx.reply(report, { parse_mode: 'HTML' });
-      await sendOrUpdateList(ctx, primaryCategory);
-    }
+    // Automatically delete old list card and send the fresh updated list at the bottom
+    await sendOrUpdateList(ctx, primaryCategory);
   } catch (error) {
     console.error('Error handling voice message:', error);
     await ctx.reply('Произошла ошибка при обработке голосового сообщения.');

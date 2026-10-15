@@ -2,6 +2,27 @@ import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
+ * Formats button text with trailing non-breaking spaces and an invisible Braille pattern blank
+ * so Telegram clients position the checkbox icon and item text aligned to the left.
+ */
+function formatItemButtonText(icon: string, text: string): string {
+  const maxDisplayLen = 27;
+  const targetPadLen = 30;
+
+  const cleanText = text.length > maxDisplayLen
+    ? text.substring(0, maxDisplayLen - 1).trim() + '…'
+    : text;
+
+  const currentLen = cleanText.length + 2; // icon + space
+  const padCount = Math.max(0, Math.round((targetPadLen - currentLen) * 1.3));
+
+  if (padCount > 0) {
+    return `${icon} ${cleanText}${'\u00A0'.repeat(padCount)}\u2800`;
+  }
+  return `${icon} ${cleanText}`;
+}
+
+/**
  * Builds the inline keyboard for the active list card.
  */
 export function buildListKeyboard(
@@ -37,11 +58,7 @@ export function buildListKeyboard(
 
     for (const item of displayItems) {
       const icon = item.is_done ? '✅' : '⬜';
-      const truncatedText = item.text.length > 35
-        ? item.text.substring(0, 32) + '...'
-        : item.text;
-
-      const buttonText = `${icon} ${truncatedText}`;
+      const buttonText = formatItemButtonText(icon, item.text);
       keyboard.text(buttonText, `toggle:${item.id}`).row();
     }
 
