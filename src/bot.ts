@@ -383,7 +383,17 @@ bot.on('message:text', async (ctx) => {
 
   await ctx.replyWithChatAction('typing');
 
-  const parsedItems = await parseMessage(rawText, user.active_category);
+  // Keep chat action "typing" active while AI request or retries are processing
+  const typingTimer = setInterval(() => {
+    ctx.replyWithChatAction('typing').catch(() => {});
+  }, 4000);
+
+  let parsedItems;
+  try {
+    parsedItems = await parseMessage(rawText, user.active_category);
+  } finally {
+    clearInterval(typingTimer);
+  }
 
   if (parsedItems.length === 0) {
     if (!isGroup) {

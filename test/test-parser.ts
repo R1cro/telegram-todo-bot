@@ -1,4 +1,4 @@
-import { parseLocal } from '../src/parser.js';
+import { parseLocal, parseMessage } from '../src/parser.js';
 
 console.log('🧪 Running local parser test suite...\n');
 
@@ -91,7 +91,17 @@ for (const tc of testCases) {
   console.log('');
 }
 
-console.log(`Test results: ${passed}/${testCases.length} passed.`);
+console.log(`Local parser test results: ${passed}/${testCases.length} passed.`);
 if (passed !== testCases.length) {
   process.exit(1);
 }
+
+// Verify parseMessage entry point (prioritizing Gemini with fallback to local parser)
+console.log('🧪 Verifying parseMessage prioritization & fallback...');
+const messageResult = await parseMessage('хлеб, молоко, сыр', 'shopping');
+if (messageResult.length !== 3) {
+  console.error(`❌ parseMessage test failed: expected 3 items, got ${messageResult.length}`);
+  process.exit(1);
+}
+console.log(`✅ parseMessage successfully extracted ${messageResult.length} items (extractedBy: ${messageResult[0].extractedBy})`);
+console.log('✅ All parser tests completed successfully!\n');

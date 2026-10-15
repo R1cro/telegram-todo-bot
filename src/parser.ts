@@ -203,6 +203,7 @@ interface RetryOptions {
   maxRetries?: number;
   timeoutMs?: number;
   onProgress?: ProgressCallback;
+  progressInitialText?: string;
 }
 
 /**
@@ -239,9 +240,10 @@ async function callGeminiWithRetry(
       try {
         if (onProgress) {
           if (attempt === 0 && modelIdx === 0) {
-            await onProgress(
-              `🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI (${model}) расшифровывает речь и извлекает задачи...</i>`
-            );
+            const initialText =
+              options?.progressInitialText ||
+              `🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI (${model}) расшифровывает речь и извлекает задачи...</i>`;
+            await onProgress(initialText);
           } else if (attempt > 0) {
             await onProgress(
               `🔄 <b>Повторная попытка (${attempt + 1}/${maxRetries + 1})</b>\n⏳ <i>Отправка запроса к ${model}...</i>`
@@ -326,7 +328,11 @@ async function callGeminiWithRetry(
 /**
  * AI-assisted parser using Google Gemini API structured output.
  */
-export async function parseWithGemini(text: string, defaultCategory: Category): Promise<ParsedItem[] | null> {
+export async function parseWithGemini(
+  text: string,
+  defaultCategory: Category,
+  onProgress?: ProgressCallback
+): Promise<ParsedItem[] | null> {
   const client = getGenAiClient();
   if (!client) return null;
 
@@ -377,14 +383,29 @@ User message:
       },
     };
 
-    const response = await callGeminiWithRetry(client, config.geminiModel, {
-      contents: prompt,
-      config: requestConfig,
-    });
+    const response = await callGeminiWithRetry(
+      client,
+      config.geminiModel,
+      {
+        contents: prompt,
+        config: requestConfig,
+      },
+      {
+        maxRetries: 1,
+        timeoutMs: 15000,
+        onProgress,
+        progressInitialText: `⏳ <i>Gemini AI (${config.geminiModel}) обрабатывает список...</i>`,
+      }
+    );
 
-    if (!response.text) return null;
+    if (!response || !response.text) return null;
 
-    const data = JSON.parse(response.text) as {
+    let cleanedText = response.text.trim();
+    if (cleanedText.startsWith('```')) {
+      cleanedText = cleanedText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    }
+
+    const data = JSON.parse(cleanedText) as {
       items?: Array<{ text: string; quantity?: number; category: string }>;
     };
 
@@ -401,7 +422,7 @@ User message:
 
     return null;
   } catch (error) {
-    console.error('Error invoking Gemini API, falling back to local parser:', error);
+    console.warn('Gemini text parse failed after retries, falling back to local parser:', error);
     return null;
   }
 }
@@ -498,6 +519,7 @@ export async function parseVoiceWithGemini(
       maxRetries: 1,
       timeoutMs: 20000,
       onProgress,
+      progressInitialText: `🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI (${config.geminiModel}) расшифровывает речь и извлекает задачи...</i>`,
     });
 
     if (!response || !response.text) {
@@ -551,30 +573,31 @@ export async function parseVoiceWithGemini(
 }
 
 /**
- * Hybrid message parser:
- * Routes complex conversational speech to Gemini AI if configured,
- * otherwise falls back to the deterministic local parser.
+ * Prioritizes Gemini AI parsing for all incoming user text messages (shopping items and tasks).
+ * If Gemini fails after multiple retry attempts and candidate model fallbacks, or if AI is disabled,
+ * seamlessly falls back to the deterministic local text parser.
  */
 export async function parseMessage(
   text: string,
-  defaultCategory: Category
+  defaultCategory: Category,
+  onProgress?: ProgressCallback
 ): Promise<ParsedItem[]> {
   const trimmed = text.trim();
   if (!trimmed) return [];
 
-  // Check if text benefits from AI conversational parsing
-  const isComplexText =
-    trimmed.length > 25 &&
-    (/\b(завтра|сегодня|послезавтра|нужно|надо|не забыть|хочу|планирую|потом|заодно|вместе с тем)\b/i.test(trimmed) ||
-      !trimmed.includes('\n'));
-
-  if (config.isAiEnabled && isComplexText) {
-    const aiResults = await parseWithGemini(trimmed, defaultCategory);
-    if (aiResults && aiResults.length > 0) {
-      return aiResults;
+  // 1. Always prioritize Gemini AI when enabled
+  if (config.isAiEnabled) {
+    try {
+      const aiResults = await parseWithGemini(trimmed, defaultCategory, onProgress);
+      if (aiResults && aiResults.length > 0) {
+        return aiResults;
+      }
+    } catch (err) {
+      console.warn('Gemini text parsing failed after retries, falling back to local parser:', err);
     }
   }
 
+  // 2. Fallback to deterministic local parser if AI is unavailable or failed
   return parseLocal(trimmed, defaultCategory);
 }
 
