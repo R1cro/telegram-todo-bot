@@ -69,6 +69,25 @@ export async function initDatabase(): Promise<void> {
 
   // Explicit TodoList entity table
   await db.execute(`
+    CREATE TABLE IF NOT EXISTS bot_activity_users (
+      user_id INTEGER PRIMARY KEY,
+      username TEXT,
+      first_name TEXT,
+      last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS bot_group_memberships (
+      chat_id INTEGER PRIMARY KEY,
+      title TEXT,
+      username TEXT,
+      status TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.execute(`
     CREATE TABLE IF NOT EXISTS todo_lists (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id INTEGER NOT NULL,
@@ -457,4 +476,39 @@ export async function getListStats(listId: number): Promise<CategoryStats> {
   }
 
   return stats;
+}
+
+export async function recordBotUserActivity(userId: number, username?: string, firstName?: string): Promise<void> {
+  await getDb().execute({
+    sql: `INSERT INTO bot_activity_users (user_id, username, first_name, last_seen_at)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            last_seen_at = CURRENT_TIMESTAMP`,
+    args: [userId, username ?? null, firstName ?? null],
+  });
+}
+
+export async function recordBotGroupMembership(
+  chatId: number, title: string, username: string | undefined, status: string
+): Promise<void> {
+  await getDb().execute({
+    sql: `INSERT INTO bot_group_memberships (chat_id, title, username, status, updated_at)
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(chat_id) DO UPDATE SET
+            title = excluded.title, username = excluded.username,
+            status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+    args: [chatId, title, username ?? null, status],
+  });
+}
+
+export async function getBotAuditData() {
+  const db = getDb();
+  const [users, knownGroups, membershipEvents] = await Promise.all([
+    db.execute('SELECT user_id, username, first_name, last_seen_at FROM bot_activity_users ORDER BY last_seen_at DESC'),
+    db.execute('SELECT chat_id, first_name FROM users WHERE chat_id < 0 ORDER BY chat_id'),
+    db.execute('SELECT chat_id, title, username, status, updated_at FROM bot_group_memberships ORDER BY updated_at DESC'),
+  ]);
+  return { users: users.rows, knownGroups: knownGroups.rows, membershipEvents: membershipEvents.rows };
 }

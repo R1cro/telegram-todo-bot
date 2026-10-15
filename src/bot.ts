@@ -16,6 +16,9 @@ import {
   clearCompletedFromList,
   clearCategoryFromList,
   getListStats,
+  recordBotUserActivity,
+  recordBotGroupMembership,
+  getBotAuditData,
   type Category,
   type TodoItem,
 } from './db.js';
@@ -30,6 +33,80 @@ import {
 validateConfig();
 
 export const bot = new Bot(config.botToken);
+
+// Keep an audit of user accounts that have sent an update the bot can see.
+bot.use(async (ctx, next) => {
+  if (ctx.from) {
+    try {
+      await recordBotUserActivity(ctx.from.id, ctx.from.username, ctx.from.first_name);
+    } catch (error) {
+      console.warn('Could not record bot user activity:', error);
+    }
+  }
+  await next();
+});
+
+// Telegram does not expose a method to enumerate all groups. Record membership
+// changes from now on so the owner can see known current and former groups.
+bot.on('my_chat_member', async (ctx) => {
+  const update = ctx.myChatMember;
+  const chat = update.chat;
+  if (chat.type !== 'group' && chat.type !== 'supergroup') return;
+  await recordBotGroupMembership(
+    chat.id,
+    chat.title || '(без названия)',
+    chat.username,
+    update.new_chat_member.status,
+  );
+});
+
+bot.command('myid', async (ctx) => {
+  if (!ctx.from) return;
+  await ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
+});
+
+bot.command('audit', async (ctx) => {
+  if (ctx.chat.type !== 'private' || !ctx.from || !config.adminUserIds.includes(ctx.from.id)) {
+    await ctx.reply('Команда доступна владельцу бота в личном чате.');
+    return;
+  }
+
+  const report = await getBotAuditData();
+  const membershipById = new Map(report.membershipEvents.map((row) => [Number(row.chat_id), row]));
+  const knownGroupIds = new Set(report.knownGroups.map((row) => Number(row.chat_id)));
+  for (const row of report.membershipEvents) knownGroupIds.add(Number(row.chat_id));
+
+  const lines = [
+    '👤 Пользователи, чьи обновления бот получил с момента установки отчёта:',
+    ...(report.users.length ? report.users.map((row) => {
+      const name = [row.first_name, row.username ? `@${row.username}` : undefined].filter(Boolean).join(' ');
+      return `• ${name || '(имя не задано)'} — ID ${row.user_id}; последнее обращение: ${row.last_seen_at}`;
+    }) : ['Пока записей нет.']),
+    '',
+    '👥 Группы:',
+    ...(knownGroupIds.size ? [...knownGroupIds].map((id) => {
+      const event = membershipById.get(id);
+      const known = report.knownGroups.find((row) => Number(row.chat_id) === id);
+      const title = event?.title || known?.first_name || '(название неизвестно)';
+      const status = event ? `статус ${event.status}, обновлено ${event.updated_at}` : 'есть в старых данных; текущий статус неизвестен';
+      return `• ${title} — ID ${id}; ${status}`;
+    }) : ['Пока групп не зафиксировано.']),
+    '',
+    'Примечание: список групп основан на сохранённых взаимодействиях и событиях членства. Telegram не предоставляет боту полный список групп; старые записи могут быть неполными или устаревшими.',
+  ];
+
+  let chunk = '';
+  for (const line of lines) {
+    const next = chunk ? `${chunk}\n${line}` : line;
+    if (next.length > 3500) {
+      await ctx.reply(chunk);
+      chunk = line;
+    } else {
+      chunk = next;
+    }
+  }
+  if (chunk) await ctx.reply(chunk);
+});
 
 interface PendingEdit {
   itemId: number;
@@ -860,12 +937,15 @@ async function main() {
       { command: 'export', description: '📋 Экспорт текстом' },
       { command: 'stats', description: '📊 Статистика' },
       { command: 'help', description: '📖 Справка и помощь' },
+      { command: 'myid', description: 'Показать мой Telegram ID' },
+      { command: 'audit', description: 'Отчёт по пользователям и группам (владелец)' },
     ]);
   } catch (e) {
     console.warn('Could not register bot commands menu with Telegram API.');
   }
 
   bot.start({
+    allowed_updates: ['message', 'callback_query', 'my_chat_member'],
     onStart: (botInfo) => {
       console.log(`Bot @${botInfo.username} is running and ready!`);
     },
