@@ -2,13 +2,21 @@ import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
- * Formats button text, truncating if too long for the inline keyboard row.
+ * Formats button text, ensuring the item title expands to occupy ~3/4 of the row
+ * while edit and delete buttons occupy the remaining ~1/4.
  */
 function formatItemButtonText(text: string): string {
-  const maxDisplayLen = 35;
+  const maxDisplayLen = 25;
+  const targetPadLen = 28;
+
   const cleanText = text.length > maxDisplayLen
     ? text.substring(0, maxDisplayLen - 1).trim() + '…'
     : text;
+
+  const padCount = Math.max(0, targetPadLen - cleanText.length);
+  if (padCount > 0) {
+    return `${cleanText}${'\u00A0'.repeat(padCount * 2)}`;
+  }
   return cleanText;
 }
 
@@ -41,33 +49,30 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 2. Interactive item rows
+  // 2. Interactive item rows (one row per item: [Title ~3/4] [Edit ~1/8] [Delete ~1/8])
   if (items.length > 0) {
     // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
-      const title = formatItemButtonText(item.text);
+      const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      const title = formatItemButtonText(`${item.text}${qtySuffix}`);
 
-      // Row 1: Full-width item title (green success button if completed)
+      // Button 1: Title (occupies ~3/4 of width, green success style if completed)
       if (item.is_done) {
         keyboard.add({
           text: title,
           callback_data: `toggle:${item.id}`,
           style: 'success',
-        }).row();
+        });
       } else {
-        keyboard.text(title, `toggle:${item.id}`).row();
+        keyboard.text(title, `toggle:${item.id}`);
       }
 
-      // Row 2: Controls row: [Edit], [-], [X шт.], [+], [Delete (red danger)]
-      const qty = item.quantity || 1;
-      keyboard
-        .text('✏️', `edit_item:${item.id}`)
-        .text('➖', `qty_dec:${item.id}`)
-        .text(`${qty} шт.`, 'noop')
-        .text('➕', `qty_inc:${item.id}`);
+      // Button 2: Edit button
+      keyboard.text('✏️', `edit_item:${item.id}`);
 
+      // Button 3: Delete button (red danger style)
       keyboard.add({
         text: '🗑',
         callback_data: `del_item:${item.id}`,
