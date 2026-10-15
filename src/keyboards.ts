@@ -89,10 +89,7 @@ export function buildListKeyboard(
   // 2. Action controls (neutral default styling to clearly separate from items)
   if (items.length > 0) {
     keyboard
-      .text({
-        text: '🏁 Закрыть список',
-        style: 'danger',
-      }, `confirm_finish:${category}`)
+      .text('🏁 Закрыть список', `confirm_finish:${category}`)
       .text('📋 Текстом', `export:${category}`)
       .row();
 
@@ -193,7 +190,7 @@ export function buildConfirmClearKeyboard(category: Category): InlineKeyboard {
  */
 export function buildConfirmFinishKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()
-    .text({ text: '🏁 Да, закрыть список', style: 'danger' }, `do_finish:${category}`)
+    .text('🏁 Да, закрыть список', `do_finish:${category}`)
     .text('❌ Отмена', `tab:${category}`);
 }
 
