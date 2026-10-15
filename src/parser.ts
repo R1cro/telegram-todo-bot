@@ -123,34 +123,74 @@ export function parseLocal(text: string, defaultCategory: Category): ParsedItem[
   return items;
 }
 
+export type ProgressCallback = (statusText: string) => Promise<void> | void;
+
+interface RetryOptions {
+  maxRetries?: number;
+  timeoutMs?: number;
+  onProgress?: ProgressCallback;
+}
+
 /**
- * Executes a Gemini request with automatic exponential backoff retries for transient
- * rate-limit/capacity errors (503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED) and model fallbacks.
+ * Executes a Gemini request with automatic timeout, exponential backoff retries for transient
+ * rate-limit/capacity errors (503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED), model fallbacks,
+ * and live progress feedback reporting.
  */
 async function callGeminiWithRetry(
   client: GoogleGenAI,
   primaryModel: string,
   payload: any,
-  maxRetries = 2
+  options?: RetryOptions
 ): Promise<any> {
+  const maxRetries = options?.maxRetries ?? 1;
+  const timeoutMs = options?.timeoutMs ?? 20000;
+  const onProgress = options?.onProgress;
+
+  // Primary model first, followed by stable widely-available fallback models
   const candidateModels = Array.from(
     new Set([
       primaryModel,
       ...(primaryModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-      'gemini-3.5-flash',
       'gemini-2.0-flash',
+      'gemini-3.5-flash',
     ])
   );
 
   let lastError: any = null;
 
-  for (const model of candidateModels) {
+  for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
+    const model = candidateModels[modelIdx];
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const response = await client.models.generateContent({
+        if (onProgress) {
+          if (attempt === 0 && modelIdx === 0) {
+            await onProgress(
+              `🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI (${model}) расшифровывает речь и извлекает задачи...</i>`
+            );
+          } else if (attempt > 0) {
+            await onProgress(
+              `🔄 <b>Повторная попытка (${attempt + 1}/${maxRetries + 1})</b>\n⏳ <i>Отправка запроса к ${model}...</i>`
+            );
+          }
+        }
+
+        // Wrap call in a timeout promise to prevent indefinite hanging on server spikes
+        const callPromise = client.models.generateContent({
           model,
           ...payload,
         });
+
+        let timerId: NodeJS.Timeout;
+        const timeoutPromise = new Promise((_, reject) => {
+          timerId = setTimeout(
+            () => reject(new Error(`Timeout: Gemini request for ${model} took longer than ${Math.round(timeoutMs / 1000)}s`)),
+            timeoutMs
+          );
+        });
+
+        const response = await Promise.race([callPromise, timeoutPromise]);
+        clearTimeout(timerId!);
         return response;
       } catch (err: any) {
         lastError = err;
@@ -161,7 +201,8 @@ async function callGeminiWithRetry(
           msg.includes('UNAVAILABLE') ||
           msg.includes('high demand') ||
           msg.includes('429') ||
-          msg.includes('RESOURCE_EXHAUSTED');
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('Timeout:');
 
         const isModelUnavailable =
           msg.includes('not found') ||
@@ -170,17 +211,36 @@ async function callGeminiWithRetry(
 
         if (isModelUnavailable) {
           // Switch to next candidate model immediately without delay
+          const nextModel = candidateModels[modelIdx + 1];
+          if (nextModel && onProgress) {
+            await onProgress(
+              `🔄 <i>Модель ${model} недоступна. Переключаюсь на ${nextModel}...</i>`
+            );
+          }
           break;
         }
 
         if (isTransient && attempt < maxRetries) {
-          const delayMs = 1200 * Math.pow(1.5, attempt) + Math.random() * 500;
-          console.warn(`Gemini transient error on ${model} (attempt ${attempt + 1}/${maxRetries}), retrying in ${Math.round(delayMs)}ms...`);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          const delaySec = Math.max(1, Math.round((1500 * Math.pow(1.5, attempt)) / 1000));
+          console.warn(`Gemini transient error on ${model} (attempt ${attempt + 1}/${maxRetries}), retrying in ${delaySec}s...`);
+
+          if (onProgress) {
+            await onProgress(
+              `⚠️ <b>Высокая нагрузка на Google (${model})</b>\n⏳ <i>Повтор через ${delaySec} сек (попытка ${attempt + 2}/${maxRetries + 1})...</i>`
+            );
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, delaySec * 1000));
           continue;
         }
 
-        // Try next fallback model if retries on current model are exhausted
+        // If retries on current model are exhausted, announce fallback model
+        const nextModel = candidateModels[modelIdx + 1];
+        if (nextModel && onProgress) {
+          await onProgress(
+            `🔄 <b>Модель ${model} перегружена</b>\n⏳ <i>Переключаюсь на резервную модель ${nextModel}...</i>`
+          );
+        }
         break;
       }
     }
@@ -273,7 +333,8 @@ User message:
 export async function parseVoiceWithGemini(
   audioBase64: string,
   mimeType: string,
-  defaultCategory: Category
+  defaultCategory: Category,
+  onProgress?: ProgressCallback
 ): Promise<VoiceParseResult> {
   const client = getGenAiClient();
   if (!client) {
@@ -348,9 +409,13 @@ export async function parseVoiceWithGemini(
       },
     };
 
-    const response = await callGeminiWithRetry(client, config.geminiModel, requestPayload);
+    const response = await callGeminiWithRetry(client, config.geminiModel, requestPayload, {
+      maxRetries: 1,
+      timeoutMs: 20000,
+      onProgress,
+    });
 
-    if (!response.text) {
+    if (!response || !response.text) {
       return {
         success: false,
         items: [],
@@ -358,10 +423,22 @@ export async function parseVoiceWithGemini(
       };
     }
 
-    const data = JSON.parse(response.text) as {
-      transcript?: string;
-      items?: Array<{ text: string; category: string }>;
-    };
+    let cleanedText = response.text.trim();
+    if (cleanedText.startsWith('```')) {
+      cleanedText = cleanedText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    }
+
+    let data: { transcript?: string; items?: Array<{ text: string; category: string }> };
+    try {
+      data = JSON.parse(cleanedText);
+    } catch (parseErr: any) {
+      console.error('Failed to parse Gemini JSON output:', cleanedText, parseErr);
+      return {
+        success: false,
+        items: [],
+        error: `Некорректный ответ от модели: ${cleanedText.slice(0, 100)}`,
+      };
+    }
 
     const transcript = data.transcript?.trim() || '';
     const items: ParsedItem[] = (data.items || [])

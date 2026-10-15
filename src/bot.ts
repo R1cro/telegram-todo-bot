@@ -407,27 +407,34 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     const base64Audio = Buffer.from(arrayBuffer).toString('base64');
     const rawMime = ('mime_type' in voice && voice.mime_type) ? voice.mime_type : 'audio/ogg';
 
-    await ctx.api.editMessageText(
-      chatId,
-      statusMsg.message_id,
-      '🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI расшифровывает речь и извлекает задачи...</i>',
-      { parse_mode: 'HTML' }
-    );
+    const onProgress = async (text: string) => {
+      try {
+        await ctx.api.editMessageText(chatId, statusMsg.message_id, text, { parse_mode: 'HTML' });
+      } catch {
+        // Ignore edit rate limits or unchanged message errors from Telegram
+      }
+    };
 
     const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
     const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
-    const voiceResult = await parseVoiceWithGemini(base64Audio, rawMime, user.active_category);
+    const voiceResult = await parseVoiceWithGemini(
+      base64Audio,
+      rawMime,
+      user.active_category,
+      onProgress
+    );
 
     if (!voiceResult.success) {
       const errText = voiceResult.error || 'Неизвестная ошибка';
       const isHighDemand =
         errText.includes('503') ||
         errText.includes('high demand') ||
-        errText.includes('UNAVAILABLE');
+        errText.includes('UNAVAILABLE') ||
+        errText.includes('Timeout');
 
       const hint = isHighDemand
-        ? '⏳ Серверы Google Gemini сейчас временно перегружены (высокий спрос на Flash модель). Бот сделал несколько попыток, но не смог получить ответ. Пожалуйста, повторите голосовое сообщение через минуту.'
+        ? '⏳ Серверы Google Gemini сейчас временно перегружены. Бот опробовал доступные модели, но не получил своевременного ответа. Пожалуйста, повторите попытку через минуту или отправьте текст.'
         : 'Проверьте правильность токена GEMINI_API_KEY и лимиты в Google AI Studio.';
 
       await ctx.api.editMessageText(
@@ -469,8 +476,10 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
 
     // Delete the temporary status message now that items are added
+    let isStatusDeleted = false;
     try {
       await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+      isStatusDeleted = true;
     } catch {}
 
     // Delete incoming voice message to keep chat history clean
@@ -483,12 +492,8 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
   } catch (error: any) {
     console.error('Error handling voice message:', error);
     try {
-      await ctx.api.editMessageText(
-        chatId,
-        statusMsg.message_id,
-        `❌ <b>Ошибка при обработке голоса:</b>\n<code>${error?.message || error}</code>`,
-        { parse_mode: 'HTML' }
-      );
+      const errorMsg = `❌ <b>Ошибка при обработке голоса:</b>\n<code>${error?.message || error}</code>`;
+      await ctx.reply(errorMsg, { parse_mode: 'HTML' });
     } catch {}
   }
 });
