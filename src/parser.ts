@@ -5,6 +5,7 @@ import type { Category } from './db.js';
 export interface ParsedItem {
   text: string;
   category: Category;
+  quantity?: number;
   extractedBy: 'ai' | 'local';
 }
 
@@ -13,6 +14,77 @@ export interface VoiceParseResult {
   transcript?: string;
   items: ParsedItem[];
   error?: string;
+}
+
+const RUSSIAN_NUMBER_WORDS: Record<string, number> = {
+  'один': 1, 'одну': 1, 'одно': 1, 'одна': 1,
+  'два': 2, 'две': 2,
+  'три': 3,
+  'четыре': 4,
+  'пять': 5,
+  'шесть': 6,
+  'семь': 7,
+  'восемь': 8,
+  'девять': 9,
+  'десять': 10,
+  'одиннадцать': 11,
+  'двенадцать': 12,
+  'тринадцать': 13,
+  'четырнадцать': 14,
+  'пятнадцать': 15,
+  'двадцать': 20,
+  'тридцать': 30,
+  'сорок': 40,
+  'пятьдесят': 50,
+  'сто': 100,
+};
+
+/**
+ * Extracts quantity count from item text (e.g. "10 сырков", "мороженое (2 пачки)", "десять сырков").
+ */
+export function extractQuantity(raw: string): { text: string; quantity: number } {
+  let text = raw.trim();
+  let quantity = 1;
+
+  // 1. Check parenthesized or trailing quantity: e.g. "Мороженое (2 пачки)", "Сырки - 10 шт", "Кофе 2шт"
+  const trailingRegex = /(?:[-—–\s]\s*|\s*\()(\d+)\s*(?:шт|пач(?:ка|ки|ек)|бут(?:ылка|ылки|ылок)|бан(?:ка|ки|ок)|уп(?:аковка|аковки|аковок))?\.?\)?$/iu;
+  const trailingMatch = text.match(trailingRegex);
+  if (trailingMatch && trailingMatch[1]) {
+    const val = parseInt(trailingMatch[1], 10);
+    if (!isNaN(val) && val > 0 && val < 1000) {
+      quantity = val;
+      text = text.slice(0, trailingMatch.index).trim();
+    }
+  }
+
+  // 2. Check leading digits: e.g. "10 сырков", "2 пачки мороженого", "3 яблока"
+  if (quantity === 1) {
+    const leadingRegex = /^(\d+)\s*(?:шт|пач(?:ка|ки|ек)|бут(?:ылка|ылки|ылок)|бан(?:ка|ки|ок)|уп(?:аковка|аковки|аковок))?\s*(?:[-—–]\s*)?/iu;
+    const leadingMatch = text.match(leadingRegex);
+    if (leadingMatch && leadingMatch[1]) {
+      const val = parseInt(leadingMatch[1], 10);
+      if (!isNaN(val) && val > 0 && val < 1000) {
+        quantity = val;
+        text = text.slice(leadingMatch[0].length).trim();
+      }
+    }
+  }
+
+  // 3. Check leading Russian word numbers: e.g. "десять сырков", "две пачки мороженого"
+  if (quantity === 1) {
+    const words = text.split(/\s+/);
+    const firstWord = words[0]?.toLowerCase();
+    if (firstWord && RUSSIAN_NUMBER_WORDS[firstWord]) {
+      quantity = RUSSIAN_NUMBER_WORDS[firstWord];
+      let rest = words.slice(1);
+      if (rest.length > 0 && /^(?:шт|пач(?:ка|ки|ек)|бут(?:ылка|ылки|ылок)|бан(?:ка|ки|ок)|уп(?:аковка|аковки|аковок))\b/i.test(rest[0])) {
+        rest = rest.slice(1);
+      }
+      text = rest.join(' ').trim();
+    }
+  }
+
+  return { text: text || raw.trim(), quantity };
 }
 
 let genAiClient: GoogleGenAI | null = null;
@@ -112,9 +184,11 @@ export function parseLocal(text: string, defaultCategory: Category): ParsedItem[
         category = defaultCategory;
       }
 
+      const parsedQty = extractQuantity(finalText);
       items.push({
-        text: finalText,
+        text: capitalize(parsedQty.text),
         category,
+        quantity: parsedQty.quantity,
         extractedBy: 'local',
       });
     }
@@ -226,7 +300,7 @@ async function callGeminiWithRetry(
 
           if (onProgress) {
             await onProgress(
-              `⚠️ <b>Высокая нагрузка на Google (${model})</b>\n⏳ <i>Повтор через ${delaySec} сек (попытка ${attempt + 2}/${maxRetries + 1})...</i>`
+              `⏳ <i>Обработка запроса через Gemini AI... Пожалуйста, подождите...</i>`
             );
           }
 
@@ -234,11 +308,11 @@ async function callGeminiWithRetry(
           continue;
         }
 
-        // If retries on current model are exhausted, announce fallback model
+        // If retries on current model are exhausted, switch to fallback model
         const nextModel = candidateModels[modelIdx + 1];
         if (nextModel && onProgress) {
           await onProgress(
-            `🔄 <b>Модель ${model} перегружена</b>\n⏳ <i>Переключаюсь на резервную модель ${nextModel}...</i>`
+            `⏳ <i>Обработка запроса через резервную модель Gemini...</i>`
           );
         }
         break;
@@ -262,9 +336,10 @@ Extract individual items from the user's message for either a shopping list ("sh
 
 Instructions:
 1. Extract concise, clean items without filler words.
-2. shopping: groceries, goods, pharmacy, store purchases.
-3. task: actions, calls, errands, chores, appointments.
-4. Default category if ambiguous: "${defaultCategory}".
+2. If a quantity count is specified (e.g. "десять сырков" -> quantity: 10, "2 пачки мороженого" -> quantity: 2), set "quantity" as an integer (default 1) and keep "text" clean (e.g. "Сырки", not "10 сырков").
+3. shopping: groceries, goods, pharmacy, store purchases.
+4. task: actions, calls, errands, chores, appointments.
+5. Default category if ambiguous: "${defaultCategory}".
 
 User message:
 """${text}"""`;
@@ -282,7 +357,11 @@ User message:
               properties: {
                 text: {
                   type: Type.STRING,
-                  description: 'Clean concise item text',
+                  description: 'Clean concise item text without quantity number',
+                },
+                quantity: {
+                  type: Type.INTEGER,
+                  description: 'Quantity count (default 1)',
                 },
                 category: {
                   type: Type.STRING,
@@ -306,7 +385,7 @@ User message:
     if (!response.text) return null;
 
     const data = JSON.parse(response.text) as {
-      items?: Array<{ text: string; category: string }>;
+      items?: Array<{ text: string; quantity?: number; category: string }>;
     };
 
     if (Array.isArray(data.items) && data.items.length > 0) {
@@ -314,6 +393,7 @@ User message:
         .filter((it) => it.text && it.text.trim())
         .map((it) => ({
           text: capitalize(it.text.trim()),
+          quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
           category: it.category === 'task' ? 'task' : 'shopping',
           extractedBy: 'ai',
         }));
@@ -359,9 +439,10 @@ export async function parseVoiceWithGemini(
     const prompt = `Listen to the attached voice message.
 1. Transcribe the speech accurately into the "transcript" field in the original language.
 2. Extract all individual shopping items and todo tasks from the speech into the "items" array.
-3. Categorize each item into "shopping" (groceries, goods, purchases) or "task" (errands, calls, chores, actions).
-4. Remove conversational filler words (e.g. "добавь пожалуйста", "надо не забыть").
-5. Default category if ambiguous: "${defaultCategory}".`;
+3. If a quantity count is specified (e.g. "десять сырков" -> quantity: 10, "2 пачки мороженого" -> quantity: 2), set "quantity" as an integer (default 1) and keep "text" clean (e.g. "Сырки", not "10 сырков").
+4. Categorize each item into "shopping" (groceries, goods, purchases) or "task" (errands, calls, chores, actions).
+5. Remove conversational filler words (e.g. "добавь пожалуйста", "надо не забыть").
+6. Default category if ambiguous: "${defaultCategory}".`;
 
     const requestPayload = {
       contents: [
@@ -392,7 +473,11 @@ export async function parseVoiceWithGemini(
                 properties: {
                   text: {
                     type: Type.STRING,
-                    description: 'Clean concise item text',
+                    description: 'Clean concise item text without quantity number',
+                  },
+                  quantity: {
+                    type: Type.INTEGER,
+                    description: 'Quantity count (default 1)',
                   },
                   category: {
                     type: Type.STRING,
@@ -428,7 +513,7 @@ export async function parseVoiceWithGemini(
       cleanedText = cleanedText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     }
 
-    let data: { transcript?: string; items?: Array<{ text: string; category: string }> };
+    let data: { transcript?: string; items?: Array<{ text: string; quantity?: number; category: string }> };
     try {
       data = JSON.parse(cleanedText);
     } catch (parseErr: any) {
@@ -445,6 +530,7 @@ export async function parseVoiceWithGemini(
       .filter((it) => it.text && it.text.trim())
       .map((it) => ({
         text: capitalize(it.text.trim()),
+        quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
         category: it.category === 'task' ? 'task' : 'shopping',
         extractedBy: 'ai',
       }));

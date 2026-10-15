@@ -12,6 +12,9 @@ import {
   clearCompletedFromList,
   clearCategoryFromList,
   getListStats,
+  getItemById,
+  updateItemQuantity,
+  updateItemText,
 } from '../src/db.js';
 
 console.log('🧪 Running SQLite database entity lifecycle test suite...\n');
@@ -123,6 +126,32 @@ async function run() {
     throw new Error('Expected new list entity to start empty');
   }
   console.log('✅ Verified fresh list starts completely empty');
+
+  // 11. Verification of item quantity counter and text editing
+  const [createdItemId] = await addItems(list2.id, testChatId, [
+    { category: 'shopping', text: 'Sample Item', quantity: 10 },
+  ]);
+  const retrievedItem = await getItemById(testChatId, createdItemId);
+  if (!retrievedItem || retrievedItem.quantity !== 10) {
+    throw new Error('Expected initial quantity to be 10');
+  }
+  console.log(`✅ Item quantity verified: id=${createdItemId}, quantity=${retrievedItem.quantity}`);
+
+  const incQty = await updateItemQuantity(testChatId, createdItemId, 1);
+  if (incQty !== 11) throw new Error('Expected quantity increment to 11');
+  console.log(`✅ Item quantity incremented: quantity=${incQty}`);
+
+  const decQty = await updateItemQuantity(testChatId, createdItemId, -2);
+  if (decQty !== 9) throw new Error('Expected quantity decrement to 9');
+  console.log(`✅ Item quantity decremented: quantity=${decQty}`);
+
+  const textUpdated = await updateItemText(testChatId, createdItemId, 'Updated Sample Item');
+  if (!textUpdated) throw new Error('Expected text update to succeed');
+  const updatedItem = await getItemById(testChatId, createdItemId);
+  if (updatedItem?.text !== 'Updated Sample Item') {
+    throw new Error('Item text does not match updated value');
+  }
+  console.log(`✅ Item text updated successfully: "${updatedItem.text}"`);
 
   // Cleanup test artifacts
   await clearCategoryFromList(list2.id, 'shopping');

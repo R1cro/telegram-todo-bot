@@ -50,13 +50,35 @@ const testCases = [
     expectedCount: 1,
     description: 'Multi-word single item',
   },
+  {
+    input: 'купить черный хлеб и десять сырков',
+    defaultCat: 'shopping' as const,
+    expectedCount: 2,
+    description: 'Word quantity extraction (десять сырков -> 10)',
+    checkQuantities: [1, 10],
+  },
+  {
+    input: 'мороженое (2 пачки)',
+    defaultCat: 'shopping' as const,
+    expectedCount: 1,
+    description: 'Parenthesized quantity extraction (2 пачки -> 2)',
+    checkQuantities: [2],
+  },
 ];
 
 let passed = 0;
 
 for (const tc of testCases) {
   const result = parseLocal(tc.input, tc.defaultCat);
-  const ok = result.length === tc.expectedCount;
+  let ok = result.length === tc.expectedCount;
+  if (ok && tc.checkQuantities) {
+    for (let i = 0; i < tc.checkQuantities.length; i++) {
+      if ((result[i]?.quantity ?? 1) !== tc.checkQuantities[i]) {
+        ok = false;
+        break;
+      }
+    }
+  }
   if (ok) {
     passed++;
     console.log(`✅ Passed: ${tc.description} (extracted ${result.length} items)`);
@@ -64,7 +86,7 @@ for (const tc of testCases) {
     console.error(`❌ Failed: ${tc.description} (expected ${tc.expectedCount}, received ${result.length})`);
   }
   for (const item of result) {
-    console.log(`   [${item.category === 'shopping' ? '🛒' : '📝'}] ${item.text}`);
+    console.log(`   [${item.category === 'shopping' ? '🛒' : '📝'}] ${item.text} (qty: ${item.quantity ?? 1})`);
   }
   console.log('');
 }

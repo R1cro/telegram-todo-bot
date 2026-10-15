@@ -58,8 +58,20 @@ export function buildListKeyboard(
 
     for (const item of displayItems) {
       const icon = item.is_done ? '✅' : '⬜';
-      const buttonText = formatItemButtonText(icon, item.text);
+      const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      const buttonText = formatItemButtonText(icon, `${item.text}${qtySuffix}`);
       keyboard.text(buttonText, `toggle:${item.id}`).row();
+
+      // Show counter component (- / +) and edit button for active items
+      if (!item.is_done) {
+        const qty = item.quantity || 1;
+        keyboard
+          .text('➖', `qty_dec:${item.id}`)
+          .text(`${qty} шт.`, `noop`)
+          .text('➕', `qty_inc:${item.id}`)
+          .text('✏️ Правка', `edit_item:${item.id}`)
+          .row();
+      }
     }
 
     if (items.length > 20) {
@@ -107,4 +119,12 @@ export function buildConfirmFinishKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()
     .text('🏁 Да, закрыть список', `do_finish:${category}`)
     .text('❌ Отмена', `tab:${category}`);
+}
+
+/**
+ * Keyboard with cancel button when user is in item text edit mode.
+ */
+export function buildCancelEditKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('❌ Отмена правки', 'cancel_edit');
 }

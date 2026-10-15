@@ -19,6 +19,7 @@ export interface TodoItem {
   chat_id: number;
   category: Category;
   text: string;
+  quantity: number;
   is_done: boolean;
   created_at: string;
 }
@@ -90,14 +91,21 @@ export async function initDatabase(): Promise<void> {
       chat_id INTEGER NOT NULL,
       category TEXT NOT NULL,
       text TEXT NOT NULL,
+      quantity INTEGER NOT NULL DEFAULT 1,
       is_done INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Soft migration in case items table existed without list_id
+  // Soft migrations for existing databases
   try {
     await db.execute(`ALTER TABLE items ADD COLUMN list_id INTEGER`);
+  } catch {
+    // Column already exists
+  }
+
+  try {
+    await db.execute(`ALTER TABLE items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1`);
   } catch {
     // Column already exists
   }
@@ -246,7 +254,7 @@ export async function setListLastMessageId(listId: number, messageId: number | n
 export async function addItems(
   listId: number,
   chatId: number,
-  items: Array<{ category: Category; text: string }>
+  items: Array<{ category: Category; text: string; quantity?: number }>
 ): Promise<number[]> {
   const db = getDb();
   const addedIds: number[] = [];
@@ -254,10 +262,11 @@ export async function addItems(
   for (const item of items) {
     const cleanText = item.text.trim();
     if (!cleanText) continue;
+    const qty = Math.max(1, Math.round(item.quantity ?? 1));
 
     const res = await db.execute({
-      sql: 'INSERT INTO items (list_id, chat_id, category, text, is_done) VALUES (?, ?, ?, ?, 0)',
-      args: [listId, chatId, item.category, cleanText],
+      sql: 'INSERT INTO items (list_id, chat_id, category, text, quantity, is_done) VALUES (?, ?, ?, ?, ?, 0)',
+      args: [listId, chatId, item.category, cleanText, qty],
     });
     if (res.lastInsertRowid !== undefined) {
       addedIds.push(Number(res.lastInsertRowid));
@@ -285,9 +294,80 @@ export async function getListItems(listId: number, category: Category): Promise<
     chat_id: Number(row.chat_id),
     category: row.category as Category,
     text: String(row.text),
+    quantity: Math.max(1, Number(row.quantity || 1)),
     is_done: Boolean(row.is_done),
     created_at: String(row.created_at),
   }));
+}
+
+/**
+ * Retrieves a single item by id and chat id.
+ */
+export async function getItemById(chatId: number, itemId: number): Promise<TodoItem | null> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: 'SELECT * FROM items WHERE id = ? AND chat_id = ?',
+    args: [itemId, chatId],
+  });
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+  return {
+    id: Number(row.id),
+    list_id: Number(row.list_id),
+    chat_id: Number(row.chat_id),
+    category: row.category as Category,
+    text: String(row.text),
+    quantity: Math.max(1, Number(row.quantity || 1)),
+    is_done: Boolean(row.is_done),
+    created_at: String(row.created_at),
+  };
+}
+
+/**
+ * Updates item quantity by adding delta (e.g. +1 or -1). Minimum quantity is 1.
+ */
+export async function updateItemQuantity(
+  chatId: number,
+  itemId: number,
+  delta: number
+): Promise<number | null> {
+  const db = getDb();
+  const existing = await db.execute({
+    sql: 'SELECT quantity FROM items WHERE id = ? AND chat_id = ?',
+    args: [itemId, chatId],
+  });
+
+  if (existing.rows.length === 0) return null;
+
+  const currentQty = Math.max(1, Number(existing.rows[0].quantity || 1));
+  const newQty = Math.max(1, currentQty + delta);
+
+  await db.execute({
+    sql: 'UPDATE items SET quantity = ? WHERE id = ? AND chat_id = ?',
+    args: [newQty, itemId, chatId],
+  });
+
+  return newQty;
+}
+
+/**
+ * Updates the text description of an existing item.
+ */
+export async function updateItemText(
+  chatId: number,
+  itemId: number,
+  newText: string
+): Promise<boolean> {
+  const db = getDb();
+  const clean = newText.trim();
+  if (!clean) return false;
+
+  const res = await db.execute({
+    sql: 'UPDATE items SET text = ? WHERE id = ? AND chat_id = ?',
+    args: [clean, itemId, chatId],
+  });
+
+  return res.rowsAffected > 0;
 }
 
 /**

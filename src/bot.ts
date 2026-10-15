@@ -9,6 +9,9 @@ import {
   setListLastMessageId,
   addItems,
   getListItems,
+  getItemById,
+  updateItemQuantity,
+  updateItemText,
   toggleItemDone,
   clearCompletedFromList,
   clearCategoryFromList,
@@ -16,16 +19,24 @@ import {
   type Category,
   type TodoItem,
 } from './db.js';
-import { parseMessage, parseVoiceWithGemini } from './parser.js';
+import { parseMessage, parseVoiceWithGemini, extractQuantity } from './parser.js';
 import {
   buildListKeyboard,
   buildConfirmClearKeyboard,
   buildConfirmFinishKeyboard,
+  buildCancelEditKeyboard,
 } from './keyboards.js';
 
 validateConfig();
 
 export const bot = new Bot(config.botToken);
+
+interface PendingEdit {
+  itemId: number;
+  itemText: string;
+  promptMsgId?: number;
+}
+const pendingEdits = new Map<number, PendingEdit>();
 
 // Conversational chatter stop-words to ignore in group chats to avoid reacting to casual talk
 const CHAT_STOP_WORDS = /^(привет|хай|ку|здравствуйте|добрый день|как дела|ок|окей|ok|хорошо|ладно|понял|понятно|пон|спасибо|спс|спасиб|благодарю|да|нет|неа|ага|я дома|я скоро|я выехал|я на месте|пока|доброе утро|спокойной ночи|отлично|лол|кек|хаха|ха-ха|круто|класс|ясно|точно|согласен|плюс|минус|\?|!|\.|\+|-)$/iu;
@@ -36,7 +47,7 @@ function isConversationalNoise(text: string): boolean {
 }
 
 /**
- * Formats the HTML text representation of the current list.
+ * Formats the HTML text representation of the current list with generous line spacing.
  */
 function renderListMessage(category: Category, items: TodoItem[], isGroup = false): string {
   const categoryTitle = category === 'shopping'
@@ -58,15 +69,19 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
   items.forEach((item, index) => {
     const icon = item.is_done ? '✅' : '⬜';
     const num = `${index + 1}.`;
+    const qtyText = item.quantity && item.quantity > 1
+      ? ` — <b>${item.quantity} шт.</b>`
+      : (category === 'shopping' ? ` — <b>${item.quantity || 1} шт.</b>` : '');
+
     if (item.is_done) {
-      text += `<s>${icon} ${num} ${item.text}</s>\n`;
+      text += `<s>${icon} ${num} ${item.text}${qtyText ? ` (${item.quantity || 1} шт.)` : ''}</s>\n\n`;
     } else {
-      text += `${icon} ${num} <b>${item.text}</b>\n`;
+      text += `${icon} ${num} <b>${item.text}</b>${qtyText}\n\n`;
     }
   });
 
-  text += `\nОсталось: <b>${activeItems.length}</b> | Выполнено: <b>${doneItems.length}</b>\n\n`;
-  text += `<i>Нажмите на пункт в кнопках ниже, чтобы отметить его:</i>`;
+  text += `Осталось: <b>${activeItems.length}</b> | Выполнено: <b>${doneItems.length}</b>\n\n`;
+  text += `<i>Управляйте пунктами, количеством и правками кнопками ниже:</i>`;
 
   return text;
 }
@@ -133,6 +148,7 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
 // ---------------- COMMAND HANDLERS ---------------- //
 
 bot.command('start', async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
   await getOrCreateUser(chatId, ctx.from?.username, ctx.from?.first_name);
 
@@ -150,10 +166,9 @@ bot.command('start', async (ctx) => {
 ${aiStatus}
 
 <b>Как добавлять пункты:</b>
-• Просто пишите сообщение: <code>молоко, хлеб, сыр</code>
+• Просто пишите сообщение: <code>молоко, хлеб, 10 сырков</code>
 • Или построчно со знаками <code>-</code> или цифрами
-• Или свободным текстом
-• Или запишите голосовое сообщение (при включенном Gemini AI)
+• Или свободным текстом или голосом
 
 Управляйте активным списком кнопками ниже 👇`;
 
@@ -162,6 +177,7 @@ ${aiStatus}
 });
 
 bot.command('help', async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const helpText = `📖 <b>Справка по командам:</b>
 
 /list — показать текущий активный список
@@ -172,8 +188,9 @@ bot.command('help', async (ctx) => {
 /export — экспортировать списки обычным текстом
 /stats — посмотреть статистику активного списка
 
-<b>Принцип работы:</b>
-Список живет как активная сущность. Любые сообщения дополняют его. Когда вы закончили покупки или дела, нажмите <b>«🏁 Закрыть список»</b>, и новый цикл начнется с чистого листа.`;
+<b>Редактирование:</b>
+• Кнопка «✏️ Правка» под любым пунктом
+• Или напишите: <code>измени 2 на ...</code> или <code>/edit 2 ...</code>`;
 
   await ctx.reply(helpText, { parse_mode: 'HTML' });
 });
@@ -229,6 +246,7 @@ bot.command(['close', 'finish'], async (ctx) => {
 });
 
 bot.command('export', async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
   const activeList = await getOrCreateActiveList(chatId);
   const [shoppingItems, taskItems] = await Promise.all([
@@ -244,21 +262,22 @@ bot.command('export', async (ctx) => {
   let text = '📋 <b>Текущий активный список:</b>\n\n';
 
   if (shoppingItems.length > 0) {
-    text += '<b>🛒 Список покупок:</b>\n';
+    text += '<b>🛒 Список покупок:</b>\n\n';
     for (const item of shoppingItems) {
       const mark = item.is_done ? '<s>[x]' : '[ ]';
       const endMark = item.is_done ? '</s>' : '';
-      text += `${mark} ${item.text}${endMark}\n`;
+      const qtyStr = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      text += `${mark} ${item.text}${qtyStr}${endMark}\n\n`;
     }
-    text += '\n';
   }
 
   if (taskItems.length > 0) {
-    text += '<b>📝 Список дел:</b>\n';
+    text += '<b>📝 Список дел:</b>\n\n';
     for (const item of taskItems) {
       const mark = item.is_done ? '<s>[x]' : '[ ]';
       const endMark = item.is_done ? '</s>' : '';
-      text += `${mark} ${item.text}${endMark}\n`;
+      const qtyStr = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      text += `${mark} ${item.text}${qtyStr}${endMark}\n\n`;
     }
   }
 
@@ -266,6 +285,7 @@ bot.command('export', async (ctx) => {
 });
 
 bot.command('stats', async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
   const activeList = await getOrCreateActiveList(chatId);
   const stats = await getListStats(activeList.id);
@@ -316,6 +336,51 @@ bot.on('message:text', async (ctx) => {
   const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
   const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
+  // 1. Check if user is in an active item text edit prompt
+  if (pendingEdits.has(chatId)) {
+    const edit = pendingEdits.get(chatId)!;
+    pendingEdits.delete(chatId);
+
+    if (edit.promptMsgId) {
+      try { await ctx.api.deleteMessage(chatId, edit.promptMsgId); } catch {}
+    }
+    try { await ctx.deleteMessage(); } catch {}
+
+    const parsedQty = extractQuantity(rawText);
+    await updateItemText(chatId, edit.itemId, parsedQty.text);
+    if (parsedQty.quantity > 1) {
+      const existing = await getItemById(chatId, edit.itemId);
+      const currentQty = existing?.quantity || 1;
+      await updateItemQuantity(chatId, edit.itemId, parsedQty.quantity - currentQty);
+    }
+
+    await sendOrUpdateList(ctx, user.active_category);
+    return;
+  }
+
+  // 2. Check for natural conversational edit commands: "измени 2 на ...", "замени 1 на ...", "/edit 2 ..."
+  const editMatch = rawText.match(/^(?:измени(?:ть)?|поменяй|замени(?:ть)?|исправь|правка|\/edit)\s+(\d+)\s*(?:на|в|:|-)?\s+(.+)$/iu);
+  if (editMatch) {
+    const itemNumber = parseInt(editMatch[1], 10);
+    const newRaw = editMatch[2].trim();
+
+    try { await ctx.deleteMessage(); } catch {}
+
+    const activeList = await getOrCreateActiveList(chatId);
+    const items = await getListItems(activeList.id, user.active_category);
+
+    if (itemNumber >= 1 && itemNumber <= items.length) {
+      const targetItem = items[itemNumber - 1];
+      const parsed = extractQuantity(newRaw);
+      await updateItemText(chatId, targetItem.id, parsed.text);
+      if (parsed.quantity !== targetItem.quantity) {
+        await updateItemQuantity(chatId, targetItem.id, parsed.quantity - targetItem.quantity);
+      }
+      await sendOrUpdateList(ctx, user.active_category);
+      return;
+    }
+  }
+
   await ctx.replyWithChatAction('typing');
 
   const parsedItems = await parseMessage(rawText, user.active_category);
@@ -343,6 +408,7 @@ bot.on('message:text', async (ctx) => {
     parsedItems.map((p) => ({
       category: p.category,
       text: p.text,
+      quantity: p.quantity,
     }))
   );
 
@@ -468,6 +534,7 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
       voiceResult.items.map((p) => ({
         category: p.category,
         text: p.text,
+        quantity: p.quantity,
       }))
     );
 
@@ -480,7 +547,11 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     try {
       await ctx.api.deleteMessage(chatId, statusMsg.message_id);
       isStatusDeleted = true;
-    } catch {}
+    } catch {
+      try {
+        await ctx.api.editMessageText(chatId, statusMsg.message_id, '✅ <i>Обработано</i>', { parse_mode: 'HTML' });
+      } catch {}
+    }
 
     // Delete incoming voice message to keep chat history clean
     try {
@@ -512,6 +583,69 @@ bot.on('callback_query:data', async (ctx) => {
 
   if (data === 'noop') {
     await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // Increment item quantity: qty_inc:<id>
+  if (data.startsWith('qty_inc:')) {
+    const itemId = Number(data.split(':')[1]);
+    const newQty = await updateItemQuantity(chatId, itemId, +1);
+    await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
+    const user = await getOrCreateUser(chatId);
+    await sendOrUpdateList(ctx, user.active_category, messageId);
+    return;
+  }
+
+  // Decrement item quantity: qty_dec:<id>
+  if (data.startsWith('qty_dec:')) {
+    const itemId = Number(data.split(':')[1]);
+    const newQty = await updateItemQuantity(chatId, itemId, -1);
+    await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
+    const user = await getOrCreateUser(chatId);
+    await sendOrUpdateList(ctx, user.active_category, messageId);
+    return;
+  }
+
+  // Interactive edit item text: edit_item:<id>
+  if (data.startsWith('edit_item:')) {
+    const itemId = Number(data.split(':')[1]);
+    const item = await getItemById(chatId, itemId);
+    if (!item) {
+      await ctx.answerCallbackQuery({ text: 'Пункт не найден' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+
+    const prev = pendingEdits.get(chatId);
+    if (prev?.promptMsgId) {
+      try { await ctx.api.deleteMessage(chatId, prev.promptMsgId); } catch {}
+    }
+
+    const prompt = await ctx.reply(
+      `✏️ <b>Редактирование:</b> «<i>${item.text}</i>»\n\n` +
+      `Отправьте новый текст сообщением (можно указать количество, например: <code>Сырки 5 шт</code>):`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: buildCancelEditKeyboard(),
+      }
+    );
+
+    pendingEdits.set(chatId, {
+      itemId,
+      itemText: item.text,
+      promptMsgId: prompt.message_id,
+    });
+    return;
+  }
+
+  // Cancel edit mode
+  if (data === 'cancel_edit') {
+    const prev = pendingEdits.get(chatId);
+    pendingEdits.delete(chatId);
+    if (prev?.promptMsgId) {
+      try { await ctx.api.deleteMessage(chatId, prev.promptMsgId); } catch {}
+    }
+    await ctx.answerCallbackQuery({ text: 'Правка отменена' });
     return;
   }
 
@@ -637,7 +771,8 @@ bot.on('callback_query:data', async (ctx) => {
     for (const item of items) {
       const check = item.is_done ? '<s>☑️' : '⬜';
       const end = item.is_done ? '</s>' : '';
-      text += `${check} ${item.text}${end}\n`;
+      const qtyStr = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      text += `${check} ${item.text}${qtyStr}${end}\n\n`;
     }
 
     await ctx.reply(text, { parse_mode: 'HTML' });
