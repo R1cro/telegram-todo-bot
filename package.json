@@ -7,7 +7,7 @@
     "start": "tsx src/bot.ts",
     "dev": "tsx watch src/bot.ts",
     "build": "tsc",
-    "test": "tsx test/test-parser.ts && tsx test/test-db.ts"
+    "test": "tsx test/test-parser.ts && tsx test/test-db.ts && tsx test/test-barcode.ts"
   },
   "keywords": [],
   "author": "",
