@@ -1,6 +1,5 @@
 import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
-import { config } from './config.js';
 
 /**
  * Formats button text, truncating if excessively long.
@@ -43,23 +42,13 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 1.5. Prominent scanner button for shopping
-  if (category === 'shopping') {
-    if (config.webAppUrl) {
-      keyboard.webApp('📷 Сканировать товар', config.webAppUrl).row();
-    } else {
-      keyboard.text('📷 Сканировать товар', 'scan_prompt').row();
-    }
-  }
-
   // 2. Interactive item rows (one item per row = 100% full width)
   if (items.length > 0) {
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
       const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
-      const priceSuffix = item.price ? ` • ${item.price} ₽` : '';
-      const title = formatItemButtonText(`${item.text}${qtySuffix}${priceSuffix}`);
+      const title = formatItemButtonText(`${item.text}${qtySuffix}`);
 
       // Single button taking 100% full width of the row
       if (item.is_done) {
@@ -119,8 +108,7 @@ export function buildManageListKeyboard(
     const displayItems = items.slice(0, 20);
     for (const item of displayItems) {
       const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
-      const priceSuffix = item.price ? ` • ${item.price} ₽` : '';
-      const title = `⚙️ ${item.text}${qtySuffix}${priceSuffix}`;
+      const title = `⚙️ ${item.text}${qtySuffix}`;
       keyboard.text(title, `manage_item:${item.id}`).row();
     }
 
@@ -134,7 +122,7 @@ export function buildManageListKeyboard(
 }
 
 /**
- * Builds the inline keyboard for managing a single item (adjust qty, price, edit text, delete).
+ * Builds the inline keyboard for managing a single item (adjust qty, edit text, delete).
  */
 export function buildManageItemKeyboard(item: TodoItem): InlineKeyboard {
   const keyboard = new InlineKeyboard();
@@ -146,21 +134,17 @@ export function buildManageItemKeyboard(item: TodoItem): InlineKeyboard {
     .text('➕', `qty_inc:${item.id}`)
     .row();
 
-  // Row 2: Price management
-  const priceBtnText = item.price ? `💵 Цена: ${item.price} ₽ (изменить)` : '💵 Указать цену';
-  keyboard.text(priceBtnText, `set_price:${item.id}`).row();
-
-  // Row 3: Edit text description
+  // Row 2: Edit text description
   keyboard.text('✏️ Изменить текст', `edit_item:${item.id}`).row();
 
-  // Row 4: Delete item
+  // Row 3: Delete item
   keyboard.add({
     text: '🗑 Удалить позицию',
     callback_data: `del_item:${item.id}`,
     style: 'danger',
   }).row();
 
-  // Row 5: Navigation back
+  // Row 4: Navigation back
   keyboard
     .text('◀️ К выбору позиции', `manage_list:${item.category}`)
     .text('📋 В список', `tab:${item.category}`);

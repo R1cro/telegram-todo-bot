@@ -18,9 +18,6 @@ import {
   deleteItem,
   getAllListMessageIds,
   clearListMessageIds,
-  setItemPriceAndBarcode,
-  getProductByBarcode,
-  saveOrUpdateProductCatalog,
 } from '../src/db.js';
 
 console.log('🧪 Running SQLite database entity lifecycle test suite...\n');
@@ -178,42 +175,6 @@ async function run() {
   const deletedItem = await getItemById(testChatId, createdItemId);
   if (deletedItem !== null) throw new Error('Expected item to be deleted from database');
   console.log(`✅ Item deleted successfully: id=${createdItemId}`);
-
-  // 12. Verification of barcode catalog and item price calculations
-  await saveOrUpdateProductCatalog('4600605021234', 'Домик в деревне 3.2%', 95.5);
-  const catalogEntry = await getProductByBarcode('4600605021234');
-  if (!catalogEntry || catalogEntry.name !== 'Домик в деревне 3.2%' || catalogEntry.price !== 95.5) {
-    throw new Error('Product catalog insert or lookup failed');
-  }
-  console.log(`✅ Product catalog entry verified: ${catalogEntry.name} (${catalogEntry.price} ₽)`);
-
-  const [priceItemId] = await addItems(list2.id, testChatId, [
-    { category: 'shopping', text: 'Молоко', quantity: 2, price: 95.5, barcode: '4600605021234' },
-    { category: 'shopping', text: 'Сыр', quantity: 1, price: 200 },
-  ]);
-  const pricedItem = await getItemById(testChatId, priceItemId);
-  if (!pricedItem || pricedItem.price !== 95.5 || pricedItem.barcode !== '4600605021234') {
-    throw new Error('Expected price and barcode to be persisted on item');
-  }
-  console.log(`✅ Item with price & barcode verified: id=${priceItemId}, price=${pricedItem.price}`);
-
-  // Mark first item as done and check stats
-  await toggleItemDone(testChatId, priceItemId);
-  const priceStats = await getListStats(list2.id);
-  // Total price: (95.5 * 2) + 200 = 391. Bought price: (95.5 * 2) = 191
-  if (priceStats.shoppingTotalPrice !== 391 || priceStats.shoppingBoughtPrice !== 191) {
-    throw new Error(`Expected price stats 391/191, got ${priceStats.shoppingTotalPrice}/${priceStats.shoppingBoughtPrice}`);
-  }
-  console.log(`✅ List price totals verified: bought=${priceStats.shoppingBoughtPrice} ₽, total=${priceStats.shoppingTotalPrice} ₽`);
-
-  // Update item price
-  await setItemPriceAndBarcode(testChatId, priceItemId, 100);
-  const recheckedStats = await getListStats(list2.id);
-  // Now: (100 * 2) + 200 = 400. Bought: 200
-  if (recheckedStats.shoppingTotalPrice !== 400 || recheckedStats.shoppingBoughtPrice !== 200) {
-    throw new Error(`Expected updated price stats 400/200, got ${recheckedStats.shoppingTotalPrice}/${recheckedStats.shoppingBoughtPrice}`);
-  }
-  console.log(`✅ Updated item price verified in stats: bought=${recheckedStats.shoppingBoughtPrice} ₽, total=${recheckedStats.shoppingTotalPrice} ₽`);
 
   // Cleanup test artifacts
   await clearCategoryFromList(list2.id, 'shopping');

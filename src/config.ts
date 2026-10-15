@@ -10,7 +10,6 @@ export interface AppConfig {
   adminUserIds: number[];
   allowedChatIds: number[];
   allowedUserIds: number[];
-  webAppUrl?: string;
 }
 
 const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
@@ -35,9 +34,6 @@ const allowedChatIds = allowedChatIdEnv
       .filter((id) => !isNaN(id))
   : [];
 
-const rawWebAppUrl = (process.env.WEBAPP_URL || process.env.SCANNER_WEBAPP_URL || '').trim();
-const webAppUrl = rawWebAppUrl.startsWith('https://') ? rawWebAppUrl : undefined;
-
 export const config: AppConfig = {
   botToken,
   geminiApiKey: geminiApiKey || undefined,
@@ -47,7 +43,6 @@ export const config: AppConfig = {
   adminUserIds,
   allowedChatIds,
   allowedUserIds,
-  webAppUrl,
 };
 
 export function validateConfig(): void {

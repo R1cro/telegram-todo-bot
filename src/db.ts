@@ -1,6 +1,4 @@
 import { createClient, type Client } from '@libsql/client';
-import fs from 'fs';
-import path from 'path';
 import { config } from './config.js';
 
 export type Category = 'shopping' | 'task';
@@ -22,8 +20,6 @@ export interface TodoItem {
   category: Category;
   text: string;
   quantity: number;
-  price?: number | null;
-  barcode?: string | null;
   is_done: boolean;
   created_at: string;
 }
@@ -41,15 +37,6 @@ export interface CategoryStats {
   shoppingDone: number;
   taskTotal: number;
   taskDone: number;
-  shoppingTotalPrice: number;
-  shoppingBoughtPrice: number;
-}
-
-export interface ProductCatalogEntry {
-  barcode: string;
-  name: string;
-  price?: number | null;
-  currency?: string;
 }
 
 let dbClient: Client | null = null;
@@ -142,106 +129,9 @@ export async function initDatabase(): Promise<void> {
     // Column already exists
   }
 
-  try {
-    await db.execute(`ALTER TABLE items ADD COLUMN price REAL`);
-  } catch {
-    // Column already exists
-  }
-
-  try {
-    await db.execute(`ALTER TABLE items ADD COLUMN barcode TEXT`);
-  } catch {
-    // Column already exists
-  }
-
   await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_items_list_category ON items(list_id, category)
   `);
-
-  // Product catalog for barcodes, known names and prices
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS products_catalog (
-      barcode TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      price REAL,
-      currency TEXT DEFAULT 'RUB',
-      category TEXT DEFAULT 'shopping',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await seedStarterCatalogIfEmpty(db);
-}
-
-/**
- * Automatically seeds initial common retail barcodes if the catalog table is empty.
- */
-async function seedStarterCatalogIfEmpty(db: Client): Promise<void> {
-  try {
-    const countRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
-    const count = Number(countRes.rows[0]?.cnt || 0);
-    if (count > 0) return;
-
-    const possiblePaths = [
-      path.resolve(process.cwd(), 'assets', 'starter_catalog.json'),
-      path.resolve(process.cwd(), 'data', 'starter_catalog.json'),
-    ];
-
-    let catalogPath: string | null = null;
-    for (const p of possiblePaths) {
-      if (fs.existsSync(p)) {
-        catalogPath = p;
-        break;
-      }
-    }
-
-    if (!catalogPath) return;
-
-    const raw = fs.readFileSync(catalogPath, 'utf-8');
-    const items = JSON.parse(raw);
-    if (!Array.isArray(items) || items.length === 0) return;
-
-    const statements = items
-      .filter((item: any) => item && item.barcode && item.name)
-      .map((item: any) => ({
-        sql: `INSERT OR IGNORE INTO products_catalog (barcode, name, price, category) VALUES (?, ?, ?, ?)`,
-        args: [
-          String(item.barcode).trim(),
-          String(item.name).trim(),
-          typeof item.price === 'number' && item.price > 0 ? item.price : null,
-          String(item.category || 'shopping'),
-        ],
-      }));
-
-    if (statements.length > 0) {
-      await db.batch(statements, 'write');
-      console.log(`[db] Pre-seeded ${statements.length} products into local barcode catalog.`);
-    }
-  } catch (err) {
-    console.warn('[db] Failed to pre-seed starter catalog:', err);
-  }
-}
-
-/**
- * Clears the local product catalog table.
- * If reseed is true, resets it back to the initial starter catalog.
- */
-export async function clearProductCatalog(reseed: boolean = false): Promise<{ deleted: number; reseeded: number }> {
-  const db = getDb();
-  const countRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
-  const deleted = Number(countRes.rows[0]?.cnt || 0);
-
-  await db.execute('DELETE FROM products_catalog');
-
-  let reseeded = 0;
-  if (reseed) {
-    await seedStarterCatalogIfEmpty(db);
-    const afterRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
-    reseeded = Number(afterRes.rows[0]?.cnt || 0);
-  }
-
-  return { deleted, reseeded };
 }
 
 /**
@@ -412,13 +302,7 @@ export async function clearListMessageIds(chatId: number, messageIds: number[]):
 export async function addItems(
   listId: number,
   chatId: number,
-  items: Array<{
-    category: Category;
-    text: string;
-    quantity?: number;
-    price?: number | null;
-    barcode?: string | null;
-  }>
+  items: Array<{ category: Category; text: string; quantity?: number }>
 ): Promise<number[]> {
   const db = getDb();
   const addedIds: number[] = [];
@@ -427,12 +311,10 @@ export async function addItems(
     const cleanText = item.text.trim();
     if (!cleanText) continue;
     const qty = Math.max(1, Math.round(item.quantity ?? 1));
-    const price = item.price !== undefined ? item.price : null;
-    const barcode = item.barcode ? item.barcode.trim() : null;
 
     const res = await db.execute({
-      sql: 'INSERT INTO items (list_id, chat_id, category, text, quantity, price, barcode, is_done) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
-      args: [listId, chatId, item.category, cleanText, qty, price, barcode],
+      sql: 'INSERT INTO items (list_id, chat_id, category, text, quantity, is_done) VALUES (?, ?, ?, ?, ?, 0)',
+      args: [listId, chatId, item.category, cleanText, qty],
     });
     if (res.lastInsertRowid !== undefined) {
       addedIds.push(Number(res.lastInsertRowid));
@@ -461,8 +343,6 @@ export async function getListItems(listId: number, category: Category): Promise<
     category: row.category as Category,
     text: String(row.text),
     quantity: Math.max(1, Number(row.quantity || 1)),
-    price: row.price !== null && row.price !== undefined ? Number(row.price) : null,
-    barcode: row.barcode ? String(row.barcode) : null,
     is_done: Boolean(row.is_done),
     created_at: String(row.created_at),
   }));
@@ -486,8 +366,6 @@ export async function getItemById(chatId: number, itemId: number): Promise<TodoI
     category: row.category as Category,
     text: String(row.text),
     quantity: Math.max(1, Number(row.quantity || 1)),
-    price: row.price !== null && row.price !== undefined ? Number(row.price) : null,
-    barcode: row.barcode ? String(row.barcode) : null,
     is_done: Boolean(row.is_done),
     created_at: String(row.created_at),
   };
@@ -536,14 +414,6 @@ export async function updateItemText(
     sql: 'UPDATE items SET text = ? WHERE id = ? AND chat_id = ?',
     args: [clean, itemId, chatId],
   });
-
-  // If item has a barcode, update catalog so it is remembered permanently
-  try {
-    const item = await getItemById(chatId, itemId);
-    if (item?.barcode) {
-      await saveOrUpdateProductCatalog(item.barcode, clean, item.price);
-    }
-  } catch {}
 
   return res.rowsAffected > 0;
 }
@@ -617,9 +487,7 @@ export async function getListStats(listId: number): Promise<CategoryStats> {
       SELECT 
         category,
         COUNT(*) as total,
-        SUM(CASE WHEN is_done = 1 THEN 1 ELSE 0 END) as done,
-        SUM(COALESCE(price, 0) * quantity) as total_price,
-        SUM(CASE WHEN is_done = 1 THEN (COALESCE(price, 0) * quantity) ELSE 0 END) as bought_price
+        SUM(CASE WHEN is_done = 1 THEN 1 ELSE 0 END) as done
       FROM items
       WHERE list_id = ?
       GROUP BY category
@@ -632,22 +500,16 @@ export async function getListStats(listId: number): Promise<CategoryStats> {
     shoppingDone: 0,
     taskTotal: 0,
     taskDone: 0,
-    shoppingTotalPrice: 0,
-    shoppingBoughtPrice: 0,
   };
 
   for (const row of res.rows) {
     const cat = String(row.category);
     const total = Number(row.total);
     const done = Number(row.done || 0);
-    const totalPrice = Math.round(Number(row.total_price || 0) * 100) / 100;
-    const boughtPrice = Math.round(Number(row.bought_price || 0) * 100) / 100;
 
     if (cat === 'shopping') {
       stats.shoppingTotal = total;
       stats.shoppingDone = done;
-      stats.shoppingTotalPrice = totalPrice;
-      stats.shoppingBoughtPrice = boughtPrice;
     } else if (cat === 'task') {
       stats.taskTotal = total;
       stats.taskDone = done;
@@ -655,66 +517,6 @@ export async function getListStats(listId: number): Promise<CategoryStats> {
   }
 
   return stats;
-}
-
-/**
- * Sets or updates the price and barcode of an item.
- */
-export async function setItemPriceAndBarcode(
-  chatId: number,
-  itemId: number,
-  price: number | null,
-  barcode?: string | null
-): Promise<boolean> {
-  const db = getDb();
-  const res = await db.execute({
-    sql: 'UPDATE items SET price = ?, barcode = COALESCE(?, barcode) WHERE id = ? AND chat_id = ?',
-    args: [price, barcode ?? null, itemId, chatId],
-  });
-  return res.rowsAffected > 0;
-}
-
-/**
- * Retrieves a product entry from the local catalog by barcode.
- */
-export async function getProductByBarcode(barcode: string): Promise<ProductCatalogEntry | null> {
-  const db = getDb();
-  const res = await db.execute({
-    sql: 'SELECT * FROM products_catalog WHERE barcode = ?',
-    args: [barcode.trim()],
-  });
-  if (res.rows.length === 0) return null;
-  const row = res.rows[0];
-  return {
-    barcode: String(row.barcode),
-    name: String(row.name),
-    price: row.price !== null && row.price !== undefined ? Number(row.price) : null,
-    currency: String(row.currency || 'RUB'),
-  };
-}
-
-/**
- * Saves or updates a product in the local catalog.
- */
-export async function saveOrUpdateProductCatalog(
-  barcode: string,
-  name: string,
-  price?: number | null
-): Promise<void> {
-  const db = getDb();
-  const cleanBarcode = barcode.trim();
-  const cleanName = name.trim();
-  if (!cleanBarcode || !cleanName) return;
-
-  await db.execute({
-    sql: `INSERT INTO products_catalog (barcode, name, price, updated_at) 
-          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(barcode) DO UPDATE SET 
-            name = excluded.name,
-            price = COALESCE(excluded.price, products_catalog.price),
-            updated_at = CURRENT_TIMESTAMP`,
-    args: [cleanBarcode, cleanName, price ?? null],
-  });
 }
 
 export async function recordBotUserActivity(userId: number, username?: string, firstName?: string): Promise<void> {
