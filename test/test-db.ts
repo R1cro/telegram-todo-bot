@@ -16,6 +16,8 @@ import {
   updateItemQuantity,
   updateItemText,
   deleteItem,
+  getAllListMessageIds,
+  clearListMessageIds,
 } from '../src/db.js';
 
 console.log('🧪 Running SQLite database entity lifecycle test suite...\n');
@@ -127,6 +129,20 @@ async function run() {
     throw new Error('Expected new list entity to start empty');
   }
   console.log('✅ Verified fresh list starts completely empty');
+
+  // Verify finding previous list message IDs
+  const oldMessageIds = await getAllListMessageIds(testChatId, list2.id);
+  if (!oldMessageIds.includes(54321)) {
+    throw new Error('Expected oldMessageIds to include 54321 from list1');
+  }
+  console.log(`✅ Verified previous list message IDs retrieved: [${oldMessageIds.join(', ')}]`);
+
+  await clearListMessageIds(testChatId, oldMessageIds);
+  const clearedMessageIds = await getAllListMessageIds(testChatId, list2.id);
+  if (clearedMessageIds.includes(54321)) {
+    throw new Error('Expected 54321 to be cleared from list message IDs');
+  }
+  console.log('✅ Verified previous list message IDs cleared successfully');
 
   // 11. Verification of item quantity counter and text editing
   const [createdItemId] = await addItems(list2.id, testChatId, [

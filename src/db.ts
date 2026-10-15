@@ -268,6 +268,35 @@ export async function setListLastMessageId(listId: number, messageId: number | n
 }
 
 /**
+ * Gets Telegram message IDs of all lists for a chat, optionally excluding a specific list.
+ */
+export async function getAllListMessageIds(chatId: number, excludeListId?: number): Promise<number[]> {
+  const db = getDb();
+  const sql = excludeListId
+    ? 'SELECT last_message_id FROM todo_lists WHERE chat_id = ? AND last_message_id IS NOT NULL AND id != ?'
+    : 'SELECT last_message_id FROM todo_lists WHERE chat_id = ? AND last_message_id IS NOT NULL';
+  const args = excludeListId ? [chatId, excludeListId] : [chatId];
+
+  const res = await db.execute({ sql, args });
+  return res.rows
+    .map((r) => Number(r.last_message_id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+/**
+ * Clears message IDs for lists once they have been deleted from Telegram.
+ */
+export async function clearListMessageIds(chatId: number, messageIds: number[]): Promise<void> {
+  if (messageIds.length === 0) return;
+  const db = getDb();
+  const placeholders = messageIds.map(() => '?').join(',');
+  await db.execute({
+    sql: `UPDATE todo_lists SET last_message_id = NULL WHERE chat_id = ? AND last_message_id IN (${placeholders})`,
+    args: [chatId, ...messageIds],
+  });
+}
+
+/**
  * Appends items to an active list entity.
  */
 export async function addItems(

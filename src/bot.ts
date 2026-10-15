@@ -7,6 +7,8 @@ import {
   getOrCreateActiveList,
   closeActiveList,
   setListLastMessageId,
+  getAllListMessageIds,
+  clearListMessageIds,
   addItems,
   getListItems,
   getItemById,
@@ -239,6 +241,34 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
 }
 
 /**
+ * Safely deletes an array of Telegram message IDs using deleteMessages with individual fallback.
+ */
+async function deleteMessagesSafe(ctx: Context, chatId: number, messageIds: number[]): Promise<number> {
+  const uniqueIds = Array.from(new Set(messageIds.filter((id) => Number.isSafeInteger(id) && id > 0)));
+  if (uniqueIds.length === 0) return 0;
+
+  let deletedCount = 0;
+  for (let i = 0; i < uniqueIds.length; i += 100) {
+    const chunk = uniqueIds.slice(i, i + 100);
+    try {
+      await ctx.api.deleteMessages(chatId, chunk);
+      deletedCount += chunk.length;
+    } catch {
+      // Fallback: delete individually in case some messages in the chunk cannot be deleted
+      await Promise.allSettled(
+        chunk.map(async (msgId) => {
+          try {
+            await ctx.api.deleteMessage(chatId, msgId);
+            deletedCount++;
+          } catch {}
+        })
+      );
+    }
+  }
+  return deletedCount;
+}
+
+/**
  * Renders or updates the interactive list card for the current active list entity.
  */
 async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId?: number) {
@@ -281,13 +311,17 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
     }
   }
 
-  // Delete previous list card message if present so there is only ever one active list message
-  if (activeList.last_message_id && activeList.last_message_id !== editMessageId) {
-    try {
-      await ctx.api.deleteMessage(chatId, activeList.last_message_id);
-    } catch {
-      // Previous message may already have been deleted
-    }
+  // Delete all previous list cards (including closed lists and previous active card)
+  const previousCardIds = await getAllListMessageIds(chatId, activeList.id);
+  const oldActiveId = activeList.last_message_id;
+  if (oldActiveId && !previousCardIds.includes(oldActiveId)) {
+    previousCardIds.push(oldActiveId);
+  }
+
+  const cardsToDelete = previousCardIds.filter((id) => id !== editMessageId);
+  if (cardsToDelete.length > 0) {
+    await deleteMessagesSafe(ctx, chatId, cardsToDelete);
+    await clearListMessageIds(chatId, cardsToDelete);
   }
 
   const sent = await ctx.reply(messageText, {
@@ -295,6 +329,17 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
     reply_markup: keyboard,
   });
   await setListLastMessageId(activeList.id, sent.message_id);
+
+  // Sweep any intermediate messages between previous card position and new card position
+  if (oldActiveId && oldActiveId < sent.message_id - 1) {
+    const sweepRange: number[] = [];
+    for (let id = oldActiveId + 1; id < sent.message_id; id++) {
+      sweepRange.push(id);
+    }
+    if (sweepRange.length > 0 && sweepRange.length <= 100) {
+      await deleteMessagesSafe(ctx, chatId, sweepRange);
+    }
+  }
 }
 
 // ---------------- COMMAND HANDLERS ---------------- //
@@ -335,13 +380,14 @@ bot.command('help', async (ctx) => {
 /list — показать текущий активный список
 /shopping — открыть 🛒 Список покупок
 /tasks — открыть 📝 Список дел и задач
+/clean — 🧹 удалить старые сообщения и закрытые списки до текущего
 /clear — удалить выполненные пункты из активного списка
 /close — 🏁 закрыть текущий список (следующее сообщение начнет новый список)
 /export — экспортировать списки обычным текстом
 /stats — посмотреть статистику активного списка
 
 <b>Редактирование:</b>
-• Кнопка «✏️ Правка» под любым пунктом
+• Кнопка «✏️ Управление списком» внизу карточки
 • Или напишите: <code>измени 2 на ...</code> или <code>/edit 2 ...</code>`;
 
   await ctx.reply(helpText, { parse_mode: 'HTML' });
@@ -371,6 +417,52 @@ bot.command('clear', async (ctx) => {
   await sendOrUpdateList(ctx, user.active_category);
 });
 
+bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
+  const chatId = ctx.chat.id;
+  const currentMsgId = ctx.message?.message_id;
+
+  // Immediately delete the /clean command message itself
+  try { await ctx.deleteMessage(); } catch {}
+
+  const activeList = await getOrCreateActiveList(chatId);
+  const targetCardId = activeList.last_message_id;
+
+  // 1. Delete all old recorded list cards from closed lists
+  const oldCardIds = await getAllListMessageIds(chatId, activeList.id);
+  if (oldCardIds.length > 0) {
+    await deleteMessagesSafe(ctx, chatId, oldCardIds);
+    await clearListMessageIds(chatId, oldCardIds);
+  }
+
+  // 2. Generate a sweep range of messages before the current list card (up to 100 messages)
+  const anchorId = targetCardId || currentMsgId;
+  if (anchorId) {
+    const sweepRange: number[] = [];
+    const sweepLimit = 100;
+    for (let id = anchorId - 1; id >= Math.max(1, anchorId - sweepLimit); id--) {
+      if (id !== targetCardId) {
+        sweepRange.push(id);
+      }
+    }
+    if (sweepRange.length > 0) {
+      await deleteMessagesSafe(ctx, chatId, sweepRange);
+    }
+  }
+
+  // 3. Ensure the current active list is visible at the bottom
+  if (!targetCardId) {
+    await sendOrUpdateList(ctx);
+  } else {
+    // Show a temporary auto-deleting confirmation toast
+    try {
+      const notice = await ctx.reply('🧹 <i>История очищена до актуального списка.</i>', { parse_mode: 'HTML' });
+      setTimeout(async () => {
+        try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+      }, 3000);
+    } catch {}
+  }
+});
+
 bot.command(['close', 'finish'], async (ctx) => {
   try { await ctx.deleteMessage(); } catch {}
   const chatId = ctx.chat.id;
@@ -384,17 +476,21 @@ bot.command(['close', 'finish'], async (ctx) => {
     } catch {}
   }
 
-  await closeActiveList(chatId);
+  const closedList = await closeActiveList(chatId);
 
   const total = stats.shoppingTotal + stats.taskTotal;
   const done = stats.shoppingDone + stats.taskDone;
 
-  await ctx.reply(
+  const sent = await ctx.reply(
     `🏁 <b>Список успешно закрыт!</b>\n\n` +
     `Всего было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
     `💡 <i>Следующее сообщение с покупками или делами создаст новый список.</i>`,
     { parse_mode: 'HTML' }
   );
+
+  if (closedList) {
+    await setListLastMessageId(closedList.id, sent.message_id);
+  }
 });
 
 bot.command('export', async (ctx) => {
@@ -1017,9 +1113,14 @@ bot.on('callback_query:data', async (ctx) => {
     const done = category === 'shopping' ? stats.shoppingDone : stats.taskDone;
 
     // Close the list entity completely
-    await closeActiveList(chatId);
+    const closedList = await closeActiveList(chatId);
 
     await ctx.answerCallbackQuery({ text: 'Список закрыт! 🏁' });
+
+    // Store messageId on the closed list entity so it is cleaned up when next list starts
+    if (closedList) {
+      await setListLastMessageId(closedList.id, messageId);
+    }
 
     const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
     const closedText = `🏁 <b>${title} успешно закрыт!</b>\n\n` +
