@@ -6,6 +6,7 @@ import {
   setItemPriceAndBarcode,
   getListItems,
   toggleItemDone,
+  addItems,
   type TodoItem,
 } from './db.js';
 
@@ -22,6 +23,7 @@ export interface BarcodeProcessResult {
   price: number | null;
   barcode: string | null;
   isNewItem: boolean;
+  createdItemId?: number;
   error?: string;
 }
 
@@ -230,7 +232,10 @@ export async function processScannedProduct(
     barcode?: string | null;
     productName?: string | null;
     price?: number | null;
-  }
+  },
+  options: {
+    autoAdd?: boolean;
+  } = { autoAdd: true }
 ): Promise<BarcodeProcessResult> {
   const cleanBarcode = input.barcode ? input.barcode.trim() : null;
   let finalName = input.productName ? input.productName.trim() : '';
@@ -291,6 +296,34 @@ export async function processScannedProduct(
       price: finalPrice,
       barcode: cleanBarcode,
       isNewItem: false,
+    };
+  }
+
+  // 6. Not in the active list: automatically add to shopping list if autoAdd is true
+  if (options.autoAdd !== false) {
+    const addedIds = await addItems(activeListId, chatId, [
+      {
+        category: 'shopping',
+        text: finalName,
+        price: finalPrice,
+        barcode: cleanBarcode,
+      },
+    ]);
+
+    let createdItemId: number | undefined;
+    if (addedIds.length > 0) {
+      createdItemId = addedIds[0];
+      await toggleItemDone(chatId, createdItemId);
+    }
+
+    return {
+      success: true,
+      matchedItem: null,
+      productName: finalName,
+      price: finalPrice,
+      barcode: cleanBarcode,
+      isNewItem: true,
+      createdItemId,
     };
   }
 

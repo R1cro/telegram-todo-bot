@@ -85,6 +85,82 @@ async function run() {
   }
   console.log('✅ Passed: Internal retail weight barcode recognized');
 
+  // 7. DB integration: processScannedProduct with matching & autoAdd
+  const { initDatabase, getOrCreateActiveList, addItems, getListItems, getListStats, closeActiveList } = await import('../src/db.js');
+  const { processScannedProduct } = await import('../src/barcode.js');
+
+  await initDatabase();
+  const testChatId = 88888888;
+  await closeActiveList(testChatId);
+  const activeList = await getOrCreateActiveList(testChatId);
+
+  // Add initial item
+  await addItems(activeList.id, testChatId, [
+    { category: 'shopping', text: 'Яблоки Голден', quantity: 2 },
+  ]);
+
+  // Scan matching item with price
+  const scanMatch = await processScannedProduct(testChatId, activeList.id, {
+    productName: 'Яблоки Голден 1кг',
+    price: 120,
+    barcode: '4601112223334',
+  });
+
+  if (!scanMatch.success || scanMatch.isNewItem || !scanMatch.matchedItem) {
+    throw new Error('Expected scanMatch to match existing "Яблоки Голден"');
+  }
+  if (scanMatch.price !== 120) {
+    throw new Error('Expected scanMatch price to be 120');
+  }
+  console.log('✅ Passed: processScannedProduct matched existing item and applied price');
+
+  // Scan brand new item -> should autoAdd to list and mark as bought
+  const scanNew = await processScannedProduct(testChatId, activeList.id, {
+    productName: 'Шоколад Ritter Sport',
+    price: 189,
+    barcode: '4000417025005',
+  });
+
+  if (!scanNew.success || !scanNew.isNewItem || !scanNew.createdItemId) {
+    throw new Error('Expected scanNew to auto-add as new item');
+  }
+
+  const itemsAfterScan = await getListItems(activeList.id, 'shopping');
+  const newItem = itemsAfterScan.find((i) => i.id === scanNew.createdItemId);
+  if (!newItem || !newItem.is_done || newItem.price !== 189) {
+    throw new Error('Expected auto-added item to be marked done with price 189');
+  }
+
+  const stats = await getListStats(activeList.id);
+  if (stats.shoppingBoughtPrice !== 429) {
+    throw new Error(`Expected total bought price to be 429 (120*2 + 189), got ${stats.shoppingBoughtPrice}`);
+  }
+  console.log(`✅ Passed: processScannedProduct auto-added new item, marked done, and calculated total (quantity*price): ${stats.shoppingBoughtPrice} ₽`);
+
+  // Scan with autoAdd: false
+  const scanNoAdd = await processScannedProduct(
+    testChatId,
+    activeList.id,
+    {
+      productName: 'Печенье Овсяное',
+      price: 85,
+      barcode: '4609998887776',
+    },
+    { autoAdd: false }
+  );
+
+  if (!scanNoAdd.success || !scanNoAdd.isNewItem || scanNoAdd.createdItemId) {
+    throw new Error('Expected autoAdd: false to not create an item');
+  }
+  const itemsAfterNoAdd = await getListItems(activeList.id, 'shopping');
+  if (itemsAfterNoAdd.length !== itemsAfterScan.length) {
+    throw new Error('Expected item list length to remain unchanged with autoAdd: false');
+  }
+  console.log('✅ Passed: processScannedProduct respected autoAdd: false option');
+
+  // Clean up
+  await closeActiveList(testChatId);
+
   console.log('\n✅ All barcode module tests passed successfully!\n');
 }
 

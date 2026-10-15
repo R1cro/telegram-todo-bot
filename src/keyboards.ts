@@ -1,5 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
+import { config } from './config.js';
 
 /**
  * Formats button text, truncating if excessively long.
@@ -41,6 +42,15 @@ export function buildListKeyboard(
     .text(shoppingLabel, 'tab:shopping')
     .text(taskLabel, 'tab:task')
     .row();
+
+  // 1.5. Prominent scanner button for shopping
+  if (category === 'shopping') {
+    if (config.webAppUrl) {
+      keyboard.webApp('📷 Сканировать товар', config.webAppUrl).row();
+    } else {
+      keyboard.text('📷 Сканировать товар', 'scan_prompt').row();
+    }
+  }
 
   // 2. Interactive item rows (one item per row = 100% full width)
   if (items.length > 0) {

@@ -503,12 +503,14 @@ bot.command('scan', async (ctx) => {
   try { await ctx.deleteMessage(); } catch {}
 
   if (!rawText) {
+    const keyboard = new InlineKeyboard().text('❌ Закрыть', 'close_scan_prompt');
     await ctx.reply(
-      '📷 <b>Как использовать сканирование:</b>\n\n' +
-      '• <b>Сфотографируйте штрихкод или ценник товара</b> и отправьте фото прямо в чат!\n' +
+      '📷 <b>Как использовать сканирование товаров:</b>\n\n' +
+      '• <b>Сфотографируйте штрихкод или ценник товара</b> и отправьте фото в чат!\n' +
       '• Либо отправьте номер штрихкода: <code>/scan 4600605021234</code>\n' +
-      '• Можно сразу с ценой: <code>/scan 4600605021234 89</code>',
-      { parse_mode: 'HTML' }
+      '• Можно сразу с ценой: <code>/scan 4600605021234 89</code>\n\n' +
+      '✨ <i>Бот автоматически определит товар, добавит его в список покупок и отметит как купленный с указанием цены!</i>',
+      { parse_mode: 'HTML', reply_markup: keyboard }
     );
     return;
   }
@@ -535,16 +537,16 @@ bot.command('scan', async (ctx) => {
       try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
     }, 4000);
   } else if (scanned.success && scanned.isNewItem) {
-    const priceInfo = scanned.price ? ` по цене <b>${scanned.price} ₽</b>` : '';
-    const keyboard = new InlineKeyboard()
-      .text('➕ Добавить в корзину', `add_scanned:${scanned.barcode || ''}`)
-      .text('❌ Отмена', 'cancel_scanned');
-
-    await ctx.reply(
-      `🔍 <b>Товар по штрихкоду:</b> «${scanned.productName}»${priceInfo}\n\n` +
-      `<i>Этого товара нет в активном списке покупок. Добавить его в корзину?</i>`,
-      { parse_mode: 'HTML', reply_markup: keyboard }
+    const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+    await sendOrUpdateList(ctx, 'shopping');
+    const notice = await ctx.reply(
+      `✅ <b>Товар добавлен сканером:</b> «${scanned.productName}»${priceInfo}\n` +
+      `<i>Добавлен в список покупок и отмечен как купленный!</i>`,
+      { parse_mode: 'HTML' }
     );
+    setTimeout(async () => {
+      try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+    }, 4000);
   } else {
     const failNotice = await ctx.reply(
       `⚠️ Штрихкод <code>${barcode}</code> не найден в базах. Вы можете добавить товар вручную.`,
@@ -726,15 +728,15 @@ bot.on('message:text', async (ctx) => {
       }, 4000);
       return;
     } else if (scanned.success && scanned.isNewItem) {
-      const priceInfo = scanned.price ? ` по цене <b>${scanned.price} ₽</b>` : '';
-      const keyboard = new InlineKeyboard()
-        .text('➕ Добавить в корзину', `add_scanned:${scanned.barcode || ''}`)
-        .text('❌ Отмена', 'cancel_scanned');
-
-      await ctx.reply(
-        `🔍 <b>Товар по штрихкоду:</b> «${scanned.productName}»${priceInfo}\n\n<i>Этого товара нет в активном списке покупок. Добавить его в корзину?</i>`,
-        { parse_mode: 'HTML', reply_markup: keyboard }
+      await sendOrUpdateList(ctx, 'shopping');
+      const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+      const notice = await ctx.reply(
+        `✅ <b>Товар добавлен сканером:</b> «${scanned.productName}»${priceInfo}\n<i>Добавлен в список покупок и отмечен как купленный!</i>`,
+        { parse_mode: 'HTML' }
       );
+      setTimeout(async () => {
+        try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+      }, 4000);
       return;
     }
   }
@@ -1018,16 +1020,17 @@ bot.on('message:photo', async (ctx) => {
         try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
       }, 4000);
     } else if (result.success && result.isNewItem) {
-      const priceInfo = result.price ? ` по цене <b>${result.price} ₽</b>` : '';
-      const keyboard = new InlineKeyboard()
-        .text('➕ Добавить в корзину', `add_scanned:${result.barcode || ''}`)
-        .text('❌ Отмена', 'cancel_scanned');
+      const priceInfo = result.price ? ` (${result.price} ₽)` : '';
+      await sendOrUpdateList(ctx, 'shopping');
 
-      await ctx.reply(
-        `🔍 <b>Распознан товар:</b> «${result.productName}»${priceInfo}\n\n` +
-        `<i>Этого товара нет в активном списке покупок. Добавить его в корзину?</i>`,
-        { parse_mode: 'HTML', reply_markup: keyboard }
+      const notice = await ctx.reply(
+        `✅ <b>Товар добавлен сканером:</b> «${result.productName}»${priceInfo}\n` +
+        `<i>Добавлен в список покупок и отмечен как купленный!</i>`,
+        { parse_mode: 'HTML' }
       );
+      setTimeout(async () => {
+        try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+      }, 4000);
     } else {
       const failNotice = await ctx.reply(
         '⚠️ <b>Не удалось распознать штрихкод или товар на фото.</b>\n<i>Попробуйте сфотографировать штрихкод крупнее при хорошем освещении или введите цифры: <code>/scan 460...</code></i>',
@@ -1051,6 +1054,49 @@ bot.on('message:photo', async (ctx) => {
   }
 });
 
+bot.on('message:web_app_data', async (ctx) => {
+  const chatId = ctx.chat.id;
+  const rawData = ctx.message.web_app_data.data.trim();
+  try { await ctx.deleteMessage(); } catch {}
+
+  if (!rawData) return;
+
+  const activeList = await getOrCreateActiveList(chatId);
+  const scanned = await processScannedProduct(chatId, activeList.id, { barcode: rawData });
+
+  if (scanned.success && scanned.matchedItem) {
+    const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+    await sendOrUpdateList(ctx, 'shopping');
+    const notice = await ctx.reply(
+      `✅ <b>Штрихкод считан:</b> «${scanned.productName}»${priceInfo}\n` +
+      `<i>Пункт «${scanned.matchedItem.text}» отмечен как купленный!</i>`,
+      { parse_mode: 'HTML' }
+    );
+    setTimeout(async () => {
+      try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+    }, 4000);
+  } else if (scanned.success && scanned.isNewItem) {
+    const priceInfo = scanned.price ? ` (${scanned.price} ₽)` : '';
+    await sendOrUpdateList(ctx, 'shopping');
+    const notice = await ctx.reply(
+      `✅ <b>Товар добавлен сканером:</b> «${scanned.productName}»${priceInfo}\n` +
+      `<i>Добавлен в список покупок и отмечен как купленный!</i>`,
+      { parse_mode: 'HTML' }
+    );
+    setTimeout(async () => {
+      try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
+    }, 4000);
+  } else {
+    const failNotice = await ctx.reply(
+      `⚠️ Штрихкод <code>${rawData}</code> не найден в базах.`,
+      { parse_mode: 'HTML' }
+    );
+    setTimeout(async () => {
+      try { await ctx.api.deleteMessage(chatId, failNotice.message_id); } catch {}
+    }, 4000);
+  }
+});
+
 // ---------------- CALLBACK QUERY HANDLERS ---------------- //
 
 bot.on('callback_query:data', async (ctx) => {
@@ -1064,6 +1110,32 @@ bot.on('callback_query:data', async (ctx) => {
   }
 
   if (data === 'noop') {
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  // Barcode / product scanner prompt: scan_prompt
+  if (data === 'scan_prompt') {
+    await ctx.answerCallbackQuery();
+    const promptKeyboard = new InlineKeyboard()
+      .text('❌ Закрыть', 'close_scan_prompt');
+
+    await ctx.reply(
+      '📷 <b>Сканирование товара</b>\n\n' +
+      '• <b>Сфотографируйте штрихкод или ценник:</b> нажмите на скрепку 📎 или камеру 📷 и отправьте фото прямо в чат!\n' +
+      '• <b>Или отправьте номер штрихкода:</b> <code>/scan 4600605021234</code> (можно сразу с ценой: <code>/scan 4600605021234 89</code>).\n\n' +
+      '✨ <i>Бот автоматически определит товар, добавит его в список покупок и отметит как купленный с расчетом суммы в корзине!</i>',
+      {
+        parse_mode: 'HTML',
+        reply_markup: promptKeyboard,
+      }
+    );
+    return;
+  }
+
+  // Close scanner prompt: close_scan_prompt
+  if (data === 'close_scan_prompt') {
+    try { await ctx.deleteMessage(); } catch {}
     await ctx.answerCallbackQuery();
     return;
   }
@@ -1505,6 +1577,7 @@ async function main() {
   try {
     await bot.api.setMyCommands([
       { command: 'list', description: 'Показать текущий список' },
+      { command: 'scan', description: '📷 Сканировать штрихкод / товар' },
       { command: 'shopping', description: '🛒 Список покупок' },
       { command: 'tasks', description: '📝 Список дел' },
       { command: 'clear', description: '🧹 Удалить выполненные' },
