@@ -1,23 +1,44 @@
-import { InlineKeyboard, Keyboard } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
- * Builds the persistent bottom Reply Keyboard for quick category switching.
- * Located outside of the message block, right above the text input bar.
+ * Builds the inline keyboard for the separate navigation message located under the list card.
  */
-export function buildBottomNavigationKeyboard(): Keyboard {
-  return new Keyboard()
-    .text('🛒 Покупки')
-    .text('📝 Дела')
-    .resized()
-    .persistent();
+export function buildNavigationKeyboard(
+  category: Category,
+  stats: CategoryStats
+): InlineKeyboard {
+  const shoppingDone = stats.shoppingDone;
+  const shoppingTotal = stats.shoppingTotal;
+  const taskDone = stats.taskDone;
+  const taskTotal = stats.taskTotal;
+
+  const shoppingLabel = category === 'shopping'
+    ? `👉 🛒 Покупки (${shoppingDone}/${shoppingTotal})`
+    : `🛒 Покупки (${shoppingTotal})`;
+
+  const taskLabel = category === 'task'
+    ? `👉 📝 Дела (${taskDone}/${taskTotal})`
+    : `📝 Дела (${taskTotal})`;
+
+  const keyboard = new InlineKeyboard();
+
+  if (category === 'shopping') {
+    keyboard.text({ text: shoppingLabel, style: 'primary' }, 'tab:shopping');
+    keyboard.text(taskLabel, 'tab:task');
+  } else {
+    keyboard.text(shoppingLabel, 'tab:shopping');
+    keyboard.text({ text: taskLabel, style: 'primary' }, 'tab:task');
+  }
+
+  return keyboard;
 }
 
 /**
  * Formats button text, truncating if excessively long.
  */
 function formatItemButtonText(text: string): string {
-  const maxDisplayLen = 42;
+  const maxDisplayLen = 45;
   if (text.length > maxDisplayLen) {
     return text.substring(0, maxDisplayLen - 1).trim() + '…';
   }
@@ -37,7 +58,7 @@ export function buildListKeyboard(
   const keyboard = new InlineKeyboard();
 
   // 1. Interactive item rows (one item per row = 100% full width)
-  // Active items: style 'primary' (blue) with ▫️ icon
+  // Active items: style 'primary' (blue), no checkbox icon
   // Completed items: style 'success' (green) with ✅ icon
   if (items.length > 0) {
     const displayItems = items.slice(0, 20);
@@ -54,7 +75,7 @@ export function buildListKeyboard(
         }, `toggle:${item.id}`).row();
       } else {
         keyboard.text({
-          text: `▫️ ${title}`,
+          text: title,
           style: 'primary',
         }, `toggle:${item.id}`).row();
       }

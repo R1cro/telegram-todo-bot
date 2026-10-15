@@ -9,6 +9,7 @@ export interface TodoList {
   chat_id: number;
   status: ListStatus;
   last_message_id?: number | null;
+  nav_message_id?: number | null;
   created_at: string;
   closed_at?: string | null;
 }
@@ -129,6 +130,12 @@ export async function initDatabase(): Promise<void> {
     // Column already exists
   }
 
+  try {
+    await db.execute(`ALTER TABLE todo_lists ADD COLUMN nav_message_id INTEGER`);
+  } catch {
+    // Column already exists
+  }
+
   await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_items_list_category ON items(list_id, category)
   `);
@@ -207,6 +214,9 @@ export async function getActiveList(chatId: number): Promise<TodoList | null> {
     last_message_id: row.last_message_id !== null && row.last_message_id !== undefined
       ? Number(row.last_message_id)
       : null,
+    nav_message_id: row.nav_message_id !== null && row.nav_message_id !== undefined
+      ? Number(row.nav_message_id)
+      : null,
     created_at: String(row.created_at),
     closed_at: row.closed_at ? String(row.closed_at) : null,
   };
@@ -231,6 +241,7 @@ export async function getOrCreateActiveList(chatId: number): Promise<TodoList> {
     chat_id: chatId,
     status: 'active',
     last_message_id: null,
+    nav_message_id: null,
     created_at: new Date().toISOString(),
     closed_at: null,
   };
@@ -257,14 +268,25 @@ export async function closeActiveList(chatId: number): Promise<TodoList | null> 
 }
 
 /**
- * Updates Telegram message id associated with the list card.
+ * Updates Telegram message IDs associated with the list card and navigation block.
  */
-export async function setListLastMessageId(listId: number, messageId: number | null): Promise<void> {
+export async function setListMessageIds(
+  listId: number,
+  cardMessageId: number | null,
+  navMessageId: number | null = null
+): Promise<void> {
   const db = getDb();
   await db.execute({
-    sql: 'UPDATE todo_lists SET last_message_id = ? WHERE id = ?',
-    args: [messageId, listId],
+    sql: 'UPDATE todo_lists SET last_message_id = ?, nav_message_id = ? WHERE id = ?',
+    args: [cardMessageId, navMessageId, listId],
   });
+}
+
+/**
+ * Updates Telegram message id associated with the list card (backward compatibility).
+ */
+export async function setListLastMessageId(listId: number, messageId: number | null): Promise<void> {
+  return setListMessageIds(listId, messageId, null);
 }
 
 /**
@@ -273,14 +295,19 @@ export async function setListLastMessageId(listId: number, messageId: number | n
 export async function getAllListMessageIds(chatId: number, excludeListId?: number): Promise<number[]> {
   const db = getDb();
   const sql = excludeListId
-    ? 'SELECT last_message_id FROM todo_lists WHERE chat_id = ? AND last_message_id IS NOT NULL AND id != ?'
-    : 'SELECT last_message_id FROM todo_lists WHERE chat_id = ? AND last_message_id IS NOT NULL';
+    ? 'SELECT last_message_id, nav_message_id FROM todo_lists WHERE chat_id = ? AND id != ?'
+    : 'SELECT last_message_id, nav_message_id FROM todo_lists WHERE chat_id = ?';
   const args = excludeListId ? [chatId, excludeListId] : [chatId];
 
   const res = await db.execute({ sql, args });
-  return res.rows
-    .map((r) => Number(r.last_message_id))
-    .filter((id) => Number.isSafeInteger(id) && id > 0);
+  const ids: number[] = [];
+  for (const r of res.rows) {
+    const cardId = Number(r.last_message_id);
+    if (Number.isSafeInteger(cardId) && cardId > 0) ids.push(cardId);
+    const navId = Number(r.nav_message_id);
+    if (Number.isSafeInteger(navId) && navId > 0) ids.push(navId);
+  }
+  return ids;
 }
 
 /**
@@ -291,8 +318,11 @@ export async function clearListMessageIds(chatId: number, messageIds: number[]):
   const db = getDb();
   const placeholders = messageIds.map(() => '?').join(',');
   await db.execute({
-    sql: `UPDATE todo_lists SET last_message_id = NULL WHERE chat_id = ? AND last_message_id IN (${placeholders})`,
-    args: [chatId, ...messageIds],
+    sql: `UPDATE todo_lists SET 
+            last_message_id = CASE WHEN last_message_id IN (${placeholders}) THEN NULL ELSE last_message_id END,
+            nav_message_id = CASE WHEN nav_message_id IN (${placeholders}) THEN NULL ELSE nav_message_id END
+          WHERE chat_id = ?`,
+    args: [...messageIds, ...messageIds, chatId],
   });
 }
 

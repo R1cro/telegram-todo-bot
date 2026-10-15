@@ -7,6 +7,7 @@ import {
   getOrCreateActiveList,
   closeActiveList,
   setListLastMessageId,
+  setListMessageIds,
   getAllListMessageIds,
   clearListMessageIds,
   addItems,
@@ -28,12 +29,12 @@ import {
 import { parseMessage, parseVoiceWithGemini, extractQuantity } from './parser.js';
 import {
   buildListKeyboard,
+  buildNavigationKeyboard,
   buildManageListKeyboard,
   buildManageItemKeyboard,
   buildConfirmClearKeyboard,
   buildConfirmFinishKeyboard,
   buildCancelEditKeyboard,
-  buildBottomNavigationKeyboard,
 } from './keyboards.js';
 
 validateConfig();
@@ -270,7 +271,7 @@ async function deleteMessagesSafe(ctx: Context, chatId: number, messageIds: numb
 }
 
 /**
- * Renders or updates the interactive list card for the current active list entity.
+ * Renders or updates the interactive list card and navigation block for the current active list entity.
  */
 async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId?: number) {
   const chatId = ctx.chat?.id;
@@ -296,45 +297,71 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
 
   const messageText = renderListMessage(targetCategory, items, isGroup);
   const keyboard = buildListKeyboard(targetCategory, items, stats);
+  const navKeyboard = buildNavigationKeyboard(targetCategory, stats);
+  const navText = '🗂 <b>Разделы списка:</b>';
 
-  if (editMessageId) {
+  // If this update was triggered by an inline button interaction and both messages already exist,
+  // edit them in-place rather than deleting and re-sending.
+  if (editMessageId && activeList.last_message_id && activeList.nav_message_id) {
     try {
-      await ctx.api.editMessageText(chatId, editMessageId, messageText, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-      await setListLastMessageId(activeList.id, editMessageId);
+      await Promise.all([
+        ctx.api.editMessageText(chatId, activeList.last_message_id, messageText, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        }).catch((e) => {
+          if (!String(e?.message).includes('message is not modified')) {
+            throw e;
+          }
+        }),
+        ctx.api.editMessageReplyMarkup(chatId, activeList.nav_message_id, {
+          reply_markup: navKeyboard,
+        }).catch((e) => {
+          if (!String(e?.message).includes('message is not modified')) {
+            throw e;
+          }
+        }),
+      ]);
       return;
     } catch (e: any) {
-      if (!String(e?.message).includes('message is not modified')) {
-        console.error('Failed to edit message:', e);
-      }
+      console.warn('Failed in-place edit of list card/nav, will re-post:', e?.message || e);
     }
   }
 
-  // Delete all previous list cards (including closed lists and previous active card)
+  // Delete all previous list cards (including closed lists and previous active card and nav)
   const previousCardIds = await getAllListMessageIds(chatId, activeList.id);
-  const oldActiveId = activeList.last_message_id;
-  if (oldActiveId && !previousCardIds.includes(oldActiveId)) {
-    previousCardIds.push(oldActiveId);
+  const oldActiveCardId = activeList.last_message_id;
+  const oldActiveNavId = activeList.nav_message_id;
+  if (oldActiveCardId && !previousCardIds.includes(oldActiveCardId)) {
+    previousCardIds.push(oldActiveCardId);
+  }
+  if (oldActiveNavId && !previousCardIds.includes(oldActiveNavId)) {
+    previousCardIds.push(oldActiveNavId);
   }
 
-  const cardsToDelete = previousCardIds.filter((id) => id !== editMessageId);
-  if (cardsToDelete.length > 0) {
-    await deleteMessagesSafe(ctx, chatId, cardsToDelete);
-    await clearListMessageIds(chatId, cardsToDelete);
+  if (previousCardIds.length > 0) {
+    await deleteMessagesSafe(ctx, chatId, previousCardIds);
+    await clearListMessageIds(chatId, previousCardIds);
   }
 
-  const sent = await ctx.reply(messageText, {
+  // Send main list card message
+  const sentCard = await ctx.reply(messageText, {
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
-  await setListLastMessageId(activeList.id, sent.message_id);
 
-  // Sweep any intermediate messages between previous card position and new card position
-  if (oldActiveId && oldActiveId < sent.message_id - 1) {
+  // Send category navigation message immediately beneath the list card
+  const sentNav = await ctx.reply(navText, {
+    parse_mode: 'HTML',
+    reply_markup: navKeyboard,
+  });
+
+  await setListMessageIds(activeList.id, sentCard.message_id, sentNav.message_id);
+
+  // Sweep any intermediate messages between previous cards position and new cards position
+  const anchorOldId = Math.max(oldActiveCardId || 0, oldActiveNavId || 0);
+  if (anchorOldId > 0 && anchorOldId < sentCard.message_id - 1) {
     const sweepRange: number[] = [];
-    for (let id = oldActiveId + 1; id < sent.message_id; id++) {
+    for (let id = anchorOldId + 1; id < sentCard.message_id; id++) {
       sweepRange.push(id);
     }
     if (sweepRange.length > 0 && sweepRange.length <= 100) {
@@ -372,7 +399,7 @@ ${aiStatus}
 
   await ctx.reply(welcome, {
     parse_mode: 'HTML',
-    reply_markup: buildBottomNavigationKeyboard(),
+    reply_markup: { remove_keyboard: true },
   });
   await sendOrUpdateList(ctx, 'shopping');
 });
@@ -396,7 +423,7 @@ bot.command('help', async (ctx) => {
 
   await ctx.reply(helpText, {
     parse_mode: 'HTML',
-    reply_markup: buildBottomNavigationKeyboard(),
+    reply_markup: { remove_keyboard: true },
   });
 });
 
@@ -433,6 +460,7 @@ bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
 
   const activeList = await getOrCreateActiveList(chatId);
   const targetCardId = activeList.last_message_id;
+  const targetNavId = activeList.nav_message_id;
 
   // 1. Delete all old recorded list cards from closed lists
   const oldCardIds = await getAllListMessageIds(chatId, activeList.id);
@@ -447,7 +475,7 @@ bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
     const sweepRange: number[] = [];
     const sweepLimit = 100;
     for (let id = anchorId - 1; id >= Math.max(1, anchorId - sweepLimit); id--) {
-      if (id !== targetCardId) {
+      if (id !== targetCardId && id !== targetNavId) {
         sweepRange.push(id);
       }
     }
@@ -457,7 +485,7 @@ bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
   }
 
   // 3. Ensure the current active list is visible at the bottom
-  if (!targetCardId) {
+  if (!targetCardId || !targetNavId) {
     await sendOrUpdateList(ctx);
   } else {
     // Show a temporary auto-deleting confirmation toast
@@ -476,10 +504,15 @@ bot.command(['close', 'finish'], async (ctx) => {
   const activeList = await getOrCreateActiveList(chatId);
   const stats = await getListStats(activeList.id);
 
-  // Delete previous active list card on close
+  // Delete previous active list card and nav message on close
   if (activeList.last_message_id) {
     try {
       await ctx.api.deleteMessage(chatId, activeList.last_message_id);
+    } catch {}
+  }
+  if (activeList.nav_message_id) {
+    try {
+      await ctx.api.deleteMessage(chatId, activeList.nav_message_id);
     } catch {}
   }
 
@@ -494,7 +527,7 @@ bot.command(['close', 'finish'], async (ctx) => {
     `💡 <i>Следующее сообщение с покупками или делами создаст новый список.</i>`,
     {
       parse_mode: 'HTML',
-      reply_markup: buildBottomNavigationKeyboard(),
+      reply_markup: { remove_keyboard: true },
     }
   );
 
@@ -594,14 +627,18 @@ bot.on('message:text', async (ctx) => {
   const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
   const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
-  // 0. Handle persistent bottom navigation buttons: "🛒 Покупки" and "📝 Дела"
+  // 0. Handle persistent bottom navigation buttons (and dismiss keyboard if tapped)
   if (/^(?:👉\s*)?🛒\s*Покупки/i.test(rawText)) {
     try { await ctx.deleteMessage(); } catch {}
+    const rm = await ctx.reply('🔄', { reply_markup: { remove_keyboard: true } });
+    try { await ctx.api.deleteMessage(chatId, rm.message_id); } catch {}
     await sendOrUpdateList(ctx, 'shopping');
     return;
   }
   if (/^(?:👉\s*)?📝\s*Дела/i.test(rawText)) {
     try { await ctx.deleteMessage(); } catch {}
+    const rm = await ctx.reply('🔄', { reply_markup: { remove_keyboard: true } });
+    try { await ctx.api.deleteMessage(chatId, rm.message_id); } catch {}
     await sendOrUpdateList(ctx, 'task');
     return;
   }
@@ -654,7 +691,7 @@ bot.on('message:text', async (ctx) => {
   // Send immediate feedback message so user knows text is received and being processed
   const statusMsg = await ctx.reply('⏳ <i>Запрос принят, обрабатываю...</i>', {
     parse_mode: 'HTML',
-    reply_markup: buildBottomNavigationKeyboard(),
+    reply_markup: { remove_keyboard: true },
   });
 
   await ctx.replyWithChatAction('typing');
@@ -727,7 +764,7 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
   // 1. Immediately confirm receipt so the user gets instant visual feedback
   const statusMsg = await ctx.reply('🎙 <b>Голосовое сообщение получено!</b>\n⏳ <i>Подготовка к обработке...</i>', {
     parse_mode: 'HTML',
-    reply_markup: buildBottomNavigationKeyboard(),
+    reply_markup: { remove_keyboard: true },
   });
 
   if (!config.isAiEnabled) {
@@ -1138,6 +1175,13 @@ bot.on('callback_query:data', async (ctx) => {
 
     // Close the list entity completely
     const closedList = await closeActiveList(chatId);
+
+    // Remove the separate navigation message so only the closed summary remains
+    if (activeList.nav_message_id) {
+      try {
+        await ctx.api.deleteMessage(chatId, activeList.nav_message_id);
+      } catch {}
+    }
 
     await ctx.answerCallbackQuery({ text: 'Список закрыт! 🏁' });
 
