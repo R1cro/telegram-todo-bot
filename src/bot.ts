@@ -58,6 +58,54 @@ bot.on('my_chat_member', async (ctx) => {
     chat.username,
     update.new_chat_member.status,
   );
+
+  // Automatically leave if not an authorized group
+  if (!config.allowedChatIds.includes(chat.id) && update.new_chat_member.status !== 'left') {
+    try {
+      await ctx.leaveChat();
+    } catch {}
+  }
+});
+
+// Enforce chat access restriction: operate exclusively in the authorized group
+bot.use(async (ctx, next) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return next();
+
+  // Allow updates in authorized group(s)
+  if (config.allowedChatIds.includes(chatId)) {
+    return next();
+  }
+
+  // Reject unauthorized callback queries
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: '⛔ Этот бот работает исключительно в разрешённой группе.', show_alert: true });
+    return;
+  }
+
+  // Automatically leave unauthorized groups
+  if (ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') {
+    try {
+      await ctx.leaveChat();
+    } catch {}
+    return;
+  }
+
+  // Handle private chat messages
+  if (ctx.chat?.type === 'private') {
+    const text = ctx.message?.text?.trim() || '';
+    if (text.startsWith('/myid')) {
+      return next();
+    }
+    if (text.startsWith('/audit') && ctx.from && config.adminUserIds.includes(ctx.from.id)) {
+      return next();
+    }
+
+    await ctx.reply('⛔ Этот бот работает исключительно в разрешённой группе.');
+    return;
+  }
+
+  return;
 });
 
 bot.command('myid', async (ctx) => {

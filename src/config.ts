@@ -8,6 +8,7 @@ export interface AppConfig {
   dbPath: string;
   isAiEnabled: boolean;
   adminUserIds: number[];
+  allowedChatIds: number[];
 }
 
 const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
@@ -19,6 +20,14 @@ const adminUserIds = (process.env.ADMIN_USER_IDS || '')
   .map((id) => Number(id.trim()))
   .filter((id) => Number.isSafeInteger(id) && id > 0);
 
+const allowedChatIdEnv = process.env.ALLOWED_CHAT_ID || process.env.ALLOWED_CHAT_IDS;
+const allowedChatIds = allowedChatIdEnv
+  ? allowedChatIdEnv
+      .split(',')
+      .map((id) => Number(id.trim()))
+      .filter((id) => !isNaN(id))
+  : [-1003905913984];
+
 export const config: AppConfig = {
   botToken,
   geminiApiKey: geminiApiKey || undefined,
@@ -26,6 +35,7 @@ export const config: AppConfig = {
   dbPath,
   isAiEnabled: Boolean(geminiApiKey && geminiApiKey.trim().length > 0),
   adminUserIds,
+  allowedChatIds,
 };
 
 export function validateConfig(): void {
