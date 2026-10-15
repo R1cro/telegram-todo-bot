@@ -124,6 +124,72 @@ export function parseLocal(text: string, defaultCategory: Category): ParsedItem[
 }
 
 /**
+ * Executes a Gemini request with automatic exponential backoff retries for transient
+ * rate-limit/capacity errors (503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED) and model fallbacks.
+ */
+async function callGeminiWithRetry(
+  client: GoogleGenAI,
+  primaryModel: string,
+  payload: any,
+  maxRetries = 2
+): Promise<any> {
+  const candidateModels = Array.from(
+    new Set([
+      primaryModel,
+      ...(primaryModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
+      'gemini-3.5-flash',
+      'gemini-2.0-flash',
+    ])
+  );
+
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await client.models.generateContent({
+          model,
+          ...payload,
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || '');
+
+        const isTransient =
+          msg.includes('503') ||
+          msg.includes('UNAVAILABLE') ||
+          msg.includes('high demand') ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED');
+
+        const isModelUnavailable =
+          msg.includes('not found') ||
+          msg.includes('no longer available') ||
+          msg.includes('404');
+
+        if (isModelUnavailable) {
+          // Switch to next candidate model immediately without delay
+          break;
+        }
+
+        if (isTransient && attempt < maxRetries) {
+          const delayMs = 1200 * Math.pow(1.5, attempt) + Math.random() * 500;
+          console.warn(`Gemini transient error on ${model} (attempt ${attempt + 1}/${maxRetries}), retrying in ${Math.round(delayMs)}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+
+        // Try next fallback model if retries on current model are exhausted
+        break;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * AI-assisted parser using Google Gemini API structured output.
  */
 export async function parseWithGemini(text: string, defaultCategory: Category): Promise<ParsedItem[] | null> {
@@ -172,26 +238,10 @@ User message:
       },
     };
 
-    let response;
-    try {
-      response = await client.models.generateContent({
-        model: config.geminiModel,
-        contents: prompt,
-        config: requestConfig,
-      });
-    } catch (modelErr: any) {
-      const errMsg = String(modelErr?.message || '');
-      if ((errMsg.includes('not found') || errMsg.includes('no longer available')) && config.geminiModel !== 'gemini-3.8-flash') {
-        console.warn(`Model ${config.geminiModel} unavailable, retrying with gemini-3.8-flash...`);
-        response = await client.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: requestConfig,
-        });
-      } else {
-        throw modelErr;
-      }
-    }
+    const response = await callGeminiWithRetry(client, config.geminiModel, {
+      contents: prompt,
+      config: requestConfig,
+    });
 
     if (!response.text) return null;
 
@@ -298,24 +348,7 @@ export async function parseVoiceWithGemini(
       },
     };
 
-    let response;
-    try {
-      response = await client.models.generateContent({
-        model: config.geminiModel,
-        ...requestPayload,
-      });
-    } catch (modelErr: any) {
-      const errMsg = String(modelErr?.message || '');
-      if ((errMsg.includes('not found') || errMsg.includes('no longer available')) && config.geminiModel !== 'gemini-3.8-flash') {
-        console.warn(`Model ${config.geminiModel} unavailable, retrying with gemini-3.8-flash...`);
-        response = await client.models.generateContent({
-          model: 'gemini-3.8-flash',
-          ...requestPayload,
-        });
-      } else {
-        throw modelErr;
-      }
-    }
+    const response = await callGeminiWithRetry(client, config.geminiModel, requestPayload);
 
     if (!response.text) {
       return {

@@ -420,10 +420,20 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     const voiceResult = await parseVoiceWithGemini(base64Audio, rawMime, user.active_category);
 
     if (!voiceResult.success) {
+      const errText = voiceResult.error || 'Неизвестная ошибка';
+      const isHighDemand =
+        errText.includes('503') ||
+        errText.includes('high demand') ||
+        errText.includes('UNAVAILABLE');
+
+      const hint = isHighDemand
+        ? '⏳ Серверы Google Gemini сейчас временно перегружены (высокий спрос на Flash модель). Бот сделал несколько попыток, но не смог получить ответ. Пожалуйста, повторите голосовое сообщение через минуту.'
+        : 'Проверьте правильность токена GEMINI_API_KEY и лимиты в Google AI Studio.';
+
       await ctx.api.editMessageText(
         chatId,
         statusMsg.message_id,
-        `❌ <b>Ошибка Gemini AI:</b>\n<code>${voiceResult.error || 'Неизвестная ошибка'}</code>\n\nПроверьте правильность токена GEMINI_API_KEY и лимиты в Google AI Studio.`,
+        `❌ <b>Ошибка Gemini AI:</b>\n<code>${errText}</code>\n\n${hint}`,
         { parse_mode: 'HTML' }
       );
       return;
