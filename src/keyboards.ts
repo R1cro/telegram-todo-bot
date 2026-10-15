@@ -1,11 +1,23 @@
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, Keyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
+
+/**
+ * Builds the persistent bottom Reply Keyboard for quick category switching.
+ * Located outside of the message block, right above the text input bar.
+ */
+export function buildBottomNavigationKeyboard(): Keyboard {
+  return new Keyboard()
+    .text('🛒 Покупки')
+    .text('📝 Дела')
+    .resized()
+    .persistent();
+}
 
 /**
  * Formats button text, truncating if excessively long.
  */
 function formatItemButtonText(text: string): string {
-  const maxDisplayLen = 45;
+  const maxDisplayLen = 42;
   if (text.length > maxDisplayLen) {
     return text.substring(0, maxDisplayLen - 1).trim() + '…';
   }
@@ -15,34 +27,18 @@ function formatItemButtonText(text: string): string {
 /**
  * Builds the inline keyboard for the active list card.
  * Each item occupies a full row (100% width) for maximum readability.
+ * Items are styled with bright primary/success colors to contrast with action buttons.
  */
 export function buildListKeyboard(
   category: Category,
   items: TodoItem[],
-  stats: CategoryStats
+  _stats: CategoryStats
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
-  // 1. Category tabs row
-  const shoppingDone = stats.shoppingDone;
-  const shoppingTotal = stats.shoppingTotal;
-  const taskDone = stats.taskDone;
-  const taskTotal = stats.taskTotal;
-
-  const shoppingLabel = category === 'shopping'
-    ? `👉 🛒 Покупки (${shoppingDone}/${shoppingTotal})`
-    : `🛒 Покупки (${shoppingTotal})`;
-
-  const taskLabel = category === 'task'
-    ? `👉 📝 Дела (${taskDone}/${taskTotal})`
-    : `📝 Дела (${taskTotal})`;
-
-  keyboard
-    .text(shoppingLabel, 'tab:shopping')
-    .text(taskLabel, 'tab:task')
-    .row();
-
-  // 2. Interactive item rows (one item per row = 100% full width)
+  // 1. Interactive item rows (one item per row = 100% full width)
+  // Active items: style 'primary' (blue) with ▫️ icon
+  // Completed items: style 'success' (green) with ✅ icon
   if (items.length > 0) {
     const displayItems = items.slice(0, 20);
 
@@ -52,13 +48,15 @@ export function buildListKeyboard(
 
       // Single button taking 100% full width of the row
       if (item.is_done) {
-        keyboard.add({
-          text: title,
-          callback_data: `toggle:${item.id}`,
+        keyboard.text({
+          text: `✅ ${title}`,
           style: 'success',
-        }).row();
+        }, `toggle:${item.id}`).row();
       } else {
-        keyboard.text(title, `toggle:${item.id}`).row();
+        keyboard.text({
+          text: `▫️ ${title}`,
+          style: 'primary',
+        }, `toggle:${item.id}`).row();
       }
     }
 
@@ -67,7 +65,7 @@ export function buildListKeyboard(
     }
   }
 
-  // 3. Action controls
+  // 2. Action controls (neutral default styling to clearly separate from items)
   if (items.length > 0) {
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
@@ -84,7 +82,10 @@ export function buildListKeyboard(
     keyboard.text('🧹 Удалить выполненные', `clear_done:${category}`);
   }
   if (items.length > 0) {
-    keyboard.text('🗑 Очистить всё', `confirm_clear:${category}`);
+    keyboard.text({
+      text: '🗑 Очистить всё',
+      style: 'danger',
+    }, `confirm_clear:${category}`);
   }
   if (hasDoneItems || items.length > 0) {
     keyboard.row();
@@ -109,7 +110,10 @@ export function buildManageListKeyboard(
     for (const item of displayItems) {
       const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
       const title = `⚙️ ${item.text}${qtySuffix}`;
-      keyboard.text(title, `manage_item:${item.id}`).row();
+      keyboard.text({
+        text: title,
+        style: 'primary',
+      }, `manage_item:${item.id}`).row();
     }
 
     if (items.length > 20) {
@@ -137,12 +141,11 @@ export function buildManageItemKeyboard(item: TodoItem): InlineKeyboard {
   // Row 2: Edit text description
   keyboard.text('✏️ Изменить текст', `edit_item:${item.id}`).row();
 
-  // Row 3: Delete item
-  keyboard.add({
+  // Row 3: Delete item with danger styling
+  keyboard.text({
     text: '🗑 Удалить позицию',
-    callback_data: `del_item:${item.id}`,
     style: 'danger',
-  }).row();
+  }, `del_item:${item.id}`).row();
 
   // Row 4: Navigation back
   keyboard
@@ -157,7 +160,7 @@ export function buildManageItemKeyboard(item: TodoItem): InlineKeyboard {
  */
 export function buildConfirmClearKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()
-    .text('⚠️ Да, очистить', `do_clear:${category}`)
+    .text({ text: '⚠️ Да, очистить', style: 'danger' }, `do_clear:${category}`)
     .text('❌ Отмена', `tab:${category}`);
 }
 

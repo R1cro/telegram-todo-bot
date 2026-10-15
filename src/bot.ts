@@ -33,6 +33,7 @@ import {
   buildConfirmClearKeyboard,
   buildConfirmFinishKeyboard,
   buildCancelEditKeyboard,
+  buildBottomNavigationKeyboard,
 } from './keyboards.js';
 
 validateConfig();
@@ -369,7 +370,10 @@ ${aiStatus}
 
 Управляйте активным списком кнопками ниже 👇`;
 
-  await ctx.reply(welcome, { parse_mode: 'HTML' });
+  await ctx.reply(welcome, {
+    parse_mode: 'HTML',
+    reply_markup: buildBottomNavigationKeyboard(),
+  });
   await sendOrUpdateList(ctx, 'shopping');
 });
 
@@ -390,7 +394,10 @@ bot.command('help', async (ctx) => {
 • Кнопка «✏️ Управление списком» внизу карточки
 • Или напишите: <code>измени 2 на ...</code> или <code>/edit 2 ...</code>`;
 
-  await ctx.reply(helpText, { parse_mode: 'HTML' });
+  await ctx.reply(helpText, {
+    parse_mode: 'HTML',
+    reply_markup: buildBottomNavigationKeyboard(),
+  });
 });
 
 bot.command(['list', 'menu'], async (ctx) => {
@@ -485,7 +492,10 @@ bot.command(['close', 'finish'], async (ctx) => {
     `🏁 <b>Список успешно закрыт!</b>\n\n` +
     `Всего было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
     `💡 <i>Следующее сообщение с покупками или делами создаст новый список.</i>`,
-    { parse_mode: 'HTML' }
+    {
+      parse_mode: 'HTML',
+      reply_markup: buildBottomNavigationKeyboard(),
+    }
   );
 
   if (closedList) {
@@ -584,6 +594,18 @@ bot.on('message:text', async (ctx) => {
   const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
   const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
+  // 0. Handle persistent bottom navigation buttons: "🛒 Покупки" and "📝 Дела"
+  if (/^(?:👉\s*)?🛒\s*Покупки/i.test(rawText)) {
+    try { await ctx.deleteMessage(); } catch {}
+    await sendOrUpdateList(ctx, 'shopping');
+    return;
+  }
+  if (/^(?:👉\s*)?📝\s*Дела/i.test(rawText)) {
+    try { await ctx.deleteMessage(); } catch {}
+    await sendOrUpdateList(ctx, 'task');
+    return;
+  }
+
   // 1. Check if user is in an active item text edit prompt
   if (pendingEdits.has(chatId)) {
     const edit = pendingEdits.get(chatId)!;
@@ -632,6 +654,7 @@ bot.on('message:text', async (ctx) => {
   // Send immediate feedback message so user knows text is received and being processed
   const statusMsg = await ctx.reply('⏳ <i>Запрос принят, обрабатываю...</i>', {
     parse_mode: 'HTML',
+    reply_markup: buildBottomNavigationKeyboard(),
   });
 
   await ctx.replyWithChatAction('typing');
@@ -704,6 +727,7 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
   // 1. Immediately confirm receipt so the user gets instant visual feedback
   const statusMsg = await ctx.reply('🎙 <b>Голосовое сообщение получено!</b>\n⏳ <i>Подготовка к обработке...</i>', {
     parse_mode: 'HTML',
+    reply_markup: buildBottomNavigationKeyboard(),
   });
 
   if (!config.isAiEnabled) {
