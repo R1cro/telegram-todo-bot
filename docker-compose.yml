@@ -1,0 +1,12 @@
+services:
+  todo-bot:
+    build: .
+    container_name: telegram_todo_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=file:/app/data/todo_bot.db
+    volumes:
+      # Постоянное хранение SQLite базы данных на хосте
+      - ./data:/app/data

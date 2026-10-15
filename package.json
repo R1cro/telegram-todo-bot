@@ -1,0 +1,27 @@
+{
+  "name": "pets",
+  "version": "1.0.0",
+  "main": "src/bot.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/bot.ts",
+    "dev": "tsx watch src/bot.ts",
+    "build": "tsc",
+    "test": "tsx test/test-parser.ts && tsx test/test-db.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@google/genai": "^2.30.0",
+    "@libsql/client": "^0.18.0",
+    "dotenv": "^18.0.8",
+    "grammy": "^1.46.0"
+  }
+}
