@@ -221,12 +221,11 @@ async function callGeminiWithRetry(
   const timeoutMs = options?.timeoutMs ?? 20000;
   const onProgress = options?.onProgress;
 
-  // Primary model first, followed by stable widely-available fallback models
+  // Primary model first, followed by active fallback models (gemini-3.8-flash, gemini-3.5-flash)
   const candidateModels = Array.from(
     new Set([
       primaryModel,
       ...(primaryModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-      'gemini-2.0-flash',
       'gemini-3.5-flash',
     ])
   );
