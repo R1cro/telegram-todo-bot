@@ -94,6 +94,14 @@ async function run() {
   await closeActiveList(testChatId);
   const activeList = await getOrCreateActiveList(testChatId);
 
+  // Test local starter catalog resolution
+  const { getProductByBarcode } = await import('../src/db.js');
+  const starterProduct = await getProductByBarcode('4600605008577');
+  if (!starterProduct || !starterProduct.name.includes('Простоквашино')) {
+    throw new Error('Expected starter catalog to contain Prostokvashino milk');
+  }
+  console.log(`✅ Passed: Local starter catalog resolved ${starterProduct.name} (${starterProduct.price} ₽)`);
+
   // Add initial item
   await addItems(activeList.id, testChatId, [
     { category: 'shopping', text: 'Яблоки Голден', quantity: 2 },

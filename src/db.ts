@@ -1,4 +1,6 @@
 import { createClient, type Client } from '@libsql/client';
+import fs from 'fs';
+import path from 'path';
 import { config } from './config.js';
 
 export type Category = 'shopping' | 'task';
@@ -168,6 +170,57 @@ export async function initDatabase(): Promise<void> {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  await seedStarterCatalogIfEmpty(db);
+}
+
+/**
+ * Automatically seeds initial common retail barcodes if the catalog table is empty.
+ */
+async function seedStarterCatalogIfEmpty(db: Client): Promise<void> {
+  try {
+    const countRes = await db.execute('SELECT COUNT(*) as cnt FROM products_catalog');
+    const count = Number(countRes.rows[0]?.cnt || 0);
+    if (count > 0) return;
+
+    const possiblePaths = [
+      path.resolve(process.cwd(), 'assets', 'starter_catalog.json'),
+      path.resolve(process.cwd(), 'data', 'starter_catalog.json'),
+    ];
+
+    let catalogPath: string | null = null;
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        catalogPath = p;
+        break;
+      }
+    }
+
+    if (!catalogPath) return;
+
+    const raw = fs.readFileSync(catalogPath, 'utf-8');
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const statements = items
+      .filter((item: any) => item && item.barcode && item.name)
+      .map((item: any) => ({
+        sql: `INSERT OR IGNORE INTO products_catalog (barcode, name, price, category) VALUES (?, ?, ?, ?)`,
+        args: [
+          String(item.barcode).trim(),
+          String(item.name).trim(),
+          typeof item.price === 'number' && item.price > 0 ? item.price : null,
+          String(item.category || 'shopping'),
+        ],
+      }));
+
+    if (statements.length > 0) {
+      await db.batch(statements, 'write');
+      console.log(`[db] Pre-seeded ${statements.length} products into local barcode catalog.`);
+    }
+  } catch (err) {
+    console.warn('[db] Failed to pre-seed starter catalog:', err);
+  }
 }
 
 /**

@@ -149,6 +149,8 @@ export async function lookupBarcodeWithGeminiSearch(
   const candidateModels = Array.from(
     new Set([
       config.geminiModel,
+      'gemini-3.8-flash',
+      'gemini-3.5-flash',
       'gemini-2.5-flash',
       'gemini-1.5-flash',
       'gemini-2.0-flash',
@@ -231,10 +233,11 @@ Return strictly valid JSON with no markdown formatting, matching this schema:
     const candidateModels = Array.from(
       new Set([
         config.geminiModel,
+        'gemini-3.8-flash',
+        'gemini-3.5-flash',
         'gemini-2.5-flash',
         'gemini-1.5-flash',
         'gemini-2.0-flash',
-        'gemini-3.8-flash',
       ].filter(Boolean))
     );
 
