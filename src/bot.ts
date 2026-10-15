@@ -26,6 +26,8 @@ import {
 import { parseMessage, parseVoiceWithGemini, extractQuantity } from './parser.js';
 import {
   buildListKeyboard,
+  buildManageListKeyboard,
+  buildManageItemKeyboard,
   buildConfirmClearKeyboard,
   buildConfirmFinishKeyboard,
   buildCancelEditKeyboard,
@@ -736,11 +738,91 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
+  // Manage entire list items view: manage_list:<category>
+  if (data.startsWith('manage_list:')) {
+    const category = data.split(':')[1] as Category;
+    const activeList = await getOrCreateActiveList(chatId);
+    const items = await getListItems(activeList.id, category);
+
+    if (items.length === 0) {
+      await ctx.answerCallbackQuery({ text: 'В этом списке пока нет пунктов' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    const catTitle = category === 'shopping' ? '🛒 Покупки' : '📝 Дела';
+    const text = `⚙️ <b>Управление списком (${catTitle}):</b>\n\n` +
+      `Нажмите на позицию, чтобы изменить текст, количество или удалить:`;
+    const keyboard = buildManageListKeyboard(category, items);
+
+    try {
+      await ctx.api.editMessageText(chatId, messageId, text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch (e: any) {
+      if (!String(e?.message).includes('message is not modified')) {
+        console.error('Failed to edit message in manage_list:', e);
+      }
+    }
+    return;
+  }
+
+  // Manage individual item view: manage_item:<id>
+  if (data.startsWith('manage_item:')) {
+    const itemId = Number(data.split(':')[1]);
+    const item = await getItemById(chatId, itemId);
+    if (!item) {
+      await ctx.answerCallbackQuery({ text: 'Пункт не найден' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    const statusStr = item.is_done ? '✅ Выполнено' : '⬜ В процессе';
+    const qtyStr = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+    const text = `⚙️ <b>Позиция:</b> «<b>${item.text}</b>»${qtyStr}\n` +
+      `Статус: <b>${statusStr}</b>\n\n` +
+      `Выберите действие:`;
+    const keyboard = buildManageItemKeyboard(item);
+
+    try {
+      await ctx.api.editMessageText(chatId, messageId, text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch (e: any) {
+      if (!String(e?.message).includes('message is not modified')) {
+        console.error('Failed to edit message in manage_item:', e);
+      }
+    }
+    return;
+  }
+
   // Increment item quantity: qty_inc:<id>
   if (data.startsWith('qty_inc:')) {
     const itemId = Number(data.split(':')[1]);
     const newQty = await updateItemQuantity(chatId, itemId, +1);
     await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
+
+    const isManageCard = Boolean(ctx.callbackQuery.message?.text?.includes('Позиция:'));
+    if (isManageCard) {
+      const updated = await getItemById(chatId, itemId);
+      if (updated) {
+        const statusStr = updated.is_done ? '✅ Выполнено' : '⬜ В процессе';
+        const qtyStr = updated.quantity && updated.quantity > 1 ? ` (${updated.quantity} шт.)` : '';
+        const text = `⚙️ <b>Позиция:</b> «<b>${updated.text}</b>»${qtyStr}\n` +
+          `Статус: <b>${statusStr}</b>\n\n` +
+          `Выберите действие:`;
+        try {
+          await ctx.api.editMessageText(chatId, messageId, text, {
+            parse_mode: 'HTML',
+            reply_markup: buildManageItemKeyboard(updated),
+          });
+          return;
+        } catch {}
+      }
+    }
+
     const user = await getOrCreateUser(chatId);
     await sendOrUpdateList(ctx, user.active_category, messageId);
     return;
@@ -756,6 +838,26 @@ bot.on('callback_query:data', async (ctx) => {
     }
     const newQty = await updateItemQuantity(chatId, itemId, -1);
     await ctx.answerCallbackQuery({ text: `Количество: ${newQty} шт.` });
+
+    const isManageCard = Boolean(ctx.callbackQuery.message?.text?.includes('Позиция:'));
+    if (isManageCard) {
+      const updated = await getItemById(chatId, itemId);
+      if (updated) {
+        const statusStr = updated.is_done ? '✅ Выполнено' : '⬜ В процессе';
+        const qtyStr = updated.quantity && updated.quantity > 1 ? ` (${updated.quantity} шт.)` : '';
+        const text = `⚙️ <b>Позиция:</b> «<b>${updated.text}</b>»${qtyStr}\n` +
+          `Статус: <b>${statusStr}</b>\n\n` +
+          `Выберите действие:`;
+        try {
+          await ctx.api.editMessageText(chatId, messageId, text, {
+            parse_mode: 'HTML',
+            reply_markup: buildManageItemKeyboard(updated),
+          });
+          return;
+        } catch {}
+      }
+    }
+
     const user = await getOrCreateUser(chatId);
     await sendOrUpdateList(ctx, user.active_category, messageId);
     return;

@@ -2,26 +2,19 @@ import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
- * Formats button text, ensuring the item title expands to occupy ~3/4 of the row
- * while edit and delete buttons occupy the remaining ~1/4.
+ * Formats button text, truncating if excessively long.
  */
 function formatItemButtonText(text: string): string {
-  const maxDisplayLen = 25;
-  const targetPadLen = 28;
-
-  const cleanText = text.length > maxDisplayLen
-    ? text.substring(0, maxDisplayLen - 1).trim() + '…'
-    : text;
-
-  const padCount = Math.max(0, targetPadLen - cleanText.length);
-  if (padCount > 0) {
-    return `${cleanText}${'\u00A0'.repeat(padCount * 2)}`;
+  const maxDisplayLen = 45;
+  if (text.length > maxDisplayLen) {
+    return text.substring(0, maxDisplayLen - 1).trim() + '…';
   }
-  return cleanText;
+  return text;
 }
 
 /**
  * Builds the inline keyboard for the active list card.
+ * Each item occupies a full row (100% width) for maximum readability.
  */
 export function buildListKeyboard(
   category: Category,
@@ -49,39 +42,28 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 2. Interactive item rows (one row per item: [Title ~3/4] [Edit ~1/8] [Delete ~1/8])
+  // 2. Interactive item rows (one item per row = 100% full width)
   if (items.length > 0) {
-    // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
       const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
       const title = formatItemButtonText(`${item.text}${qtySuffix}`);
 
-      // Button 1: Title (occupies ~3/4 of width, green success style if completed)
+      // Single button taking 100% full width of the row
       if (item.is_done) {
         keyboard.add({
           text: title,
           callback_data: `toggle:${item.id}`,
           style: 'success',
-        });
+        }).row();
       } else {
-        keyboard.text(title, `toggle:${item.id}`);
+        keyboard.text(title, `toggle:${item.id}`).row();
       }
-
-      // Button 2: Edit button
-      keyboard.text('✏️', `edit_item:${item.id}`);
-
-      // Button 3: Delete button (red danger style)
-      keyboard.add({
-        text: '🗑',
-        callback_data: `del_item:${item.id}`,
-        style: 'danger',
-      }).row();
     }
 
     if (items.length > 20) {
-      keyboard.text(`... and ${items.length - 20} more items`, 'noop').row();
+      keyboard.text(`... и ещё ${items.length - 20} позиций`, 'noop').row();
     }
   }
 
@@ -90,6 +72,10 @@ export function buildListKeyboard(
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
       .text('📋 Текстом', `export:${category}`)
+      .row();
+
+    keyboard
+      .text('✏️ Управление списком', `manage_list:${category}`)
       .row();
   }
 
@@ -105,6 +91,63 @@ export function buildListKeyboard(
   }
 
   keyboard.text('🔄 Обновить', `refresh:${category}`);
+
+  return keyboard;
+}
+
+/**
+ * Builds the inline keyboard for choosing an item to manage (edit or delete).
+ */
+export function buildManageListKeyboard(
+  category: Category,
+  items: TodoItem[]
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  if (items.length > 0) {
+    const displayItems = items.slice(0, 20);
+    for (const item of displayItems) {
+      const qtySuffix = item.quantity && item.quantity > 1 ? ` (${item.quantity} шт.)` : '';
+      const title = `⚙️ ${item.text}${qtySuffix}`;
+      keyboard.text(title, `manage_item:${item.id}`).row();
+    }
+
+    if (items.length > 20) {
+      keyboard.text(`... и ещё ${items.length - 20} позиций`, 'noop').row();
+    }
+  }
+
+  keyboard.text('◀️ Назад к списку', `tab:${category}`);
+  return keyboard;
+}
+
+/**
+ * Builds the inline keyboard for managing a single item (adjust qty, edit text, delete).
+ */
+export function buildManageItemKeyboard(item: TodoItem): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  // Row 1: Quantity counter
+  keyboard
+    .text('➖', `qty_dec:${item.id}`)
+    .text(`${item.quantity || 1} шт.`, 'noop')
+    .text('➕', `qty_inc:${item.id}`)
+    .row();
+
+  // Row 2: Edit text description
+  keyboard.text('✏️ Изменить текст', `edit_item:${item.id}`).row();
+
+  // Row 3: Delete item
+  keyboard.add({
+    text: '🗑 Удалить позицию',
+    callback_data: `del_item:${item.id}`,
+    style: 'danger',
+  }).row();
+
+  // Row 4: Navigation back
+  keyboard
+    .text('◀️ К выбору позиции', `manage_list:${item.category}`)
+    .text('📋 В список', `tab:${item.category}`);
 
   return keyboard;
 }
