@@ -71,20 +71,20 @@ bot.on('my_chat_member', async (ctx) => {
     update.new_chat_member.status,
   );
 
-  // Automatically leave if not an authorized group
-  if (!config.allowedChatIds.includes(chat.id) && update.new_chat_member.status !== 'left') {
+  // Automatically leave if explicit group whitelist is configured and this group is not in it
+  if (config.allowedChatIds.length > 0 && !config.allowedChatIds.includes(chat.id) && update.new_chat_member.status !== 'left') {
     try {
       await ctx.leaveChat();
     } catch {}
   }
 });
 
-// Enforce chat and user access restrictions
+// Enforce user access restrictions
 bot.use(async (ctx, next) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return next();
 
-  // Allow /myid for anyone in private chat to discover their Telegram ID
+  // Allow /myid for anyone to discover their Telegram ID
   const text = ctx.message?.text?.trim() || '';
   if (text.startsWith('/myid')) {
     return next();
@@ -95,53 +95,53 @@ bot.use(async (ctx, next) => {
     return next();
   }
 
-  // Check if group is authorized
-  if (config.allowedChatIds.includes(chatId)) {
-    // If a user whitelist is configured, restrict actions to authorized users
-    if (config.allowedUserIds.length > 0) {
-      const fromId = ctx.from?.id;
-      const isAllowed = Boolean(
-        fromId && (config.allowedUserIds.includes(fromId) || config.adminUserIds.includes(fromId))
-      );
-
-      if (!isAllowed) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({
-            text: '⛔ У вас нет доступа к управлению этим ботом.',
-            show_alert: true,
-          });
-          return;
-        }
-
-        // In group chats, silently ignore messages from non-whitelisted users
-        return;
-      }
-    }
-
-    return next();
-  }
-
-  // Reject unauthorized callback queries
-  if (ctx.callbackQuery) {
-    await ctx.answerCallbackQuery({ text: '⛔ Этот бот работает исключительно в разрешённой группе.', show_alert: true });
-    return;
-  }
-
-  // Automatically leave unauthorized groups
-  if (ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') {
+  // If a group whitelist is explicitly configured, leave unlisted groups
+  if (
+    config.allowedChatIds.length > 0 &&
+    (ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') &&
+    !config.allowedChatIds.includes(chatId)
+  ) {
     try {
       await ctx.leaveChat();
     } catch {}
     return;
   }
 
-  // Handle private chat messages
-  if (ctx.chat?.type === 'private') {
-    await ctx.reply('⛔ Этот бот работает исключительно в разрешённой группе.');
-    return;
+  // Check user whitelist
+  const fromId = ctx.from?.id;
+  const hasUserWhitelist = config.allowedUserIds.length > 0 || config.adminUserIds.length > 0;
+
+  if (hasUserWhitelist) {
+    const isAllowed = Boolean(
+      fromId && (config.allowedUserIds.includes(fromId) || config.adminUserIds.includes(fromId))
+    );
+
+    if (!isAllowed) {
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({
+          text: '⛔ У вас нет доступа к управлению этим ботом.',
+          show_alert: true,
+        });
+        return;
+      }
+
+      // In private chat, inform the user about access restriction and show their ID
+      if (ctx.chat?.type === 'private') {
+        await ctx.reply(
+          `⛔ <b>Доступ ограничен.</b>\n\n` +
+          `Ваш Telegram ID: <code>${fromId || 'неизвестен'}</code>.\n\n` +
+          `Бот работает по списку разрешённых пользователей. Попросите администратора добавить ваш ID в список.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      // In group chats, silently ignore messages from non-whitelisted users
+      return;
+    }
   }
 
-  return;
+  return next();
 });
 
 bot.command('myid', async (ctx) => {

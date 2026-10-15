@@ -33,7 +33,7 @@ const allowedChatIds = allowedChatIdEnv
       .split(',')
       .map((id) => Number(id.trim()))
       .filter((id) => !isNaN(id))
-  : [-1003905913984];
+  : [];
 
 const rawWebAppUrl = (process.env.WEBAPP_URL || process.env.SCANNER_WEBAPP_URL || '').trim();
 const webAppUrl = rawWebAppUrl.startsWith('https://') ? rawWebAppUrl : undefined;
