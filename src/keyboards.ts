@@ -2,7 +2,7 @@ import { InlineKeyboard } from 'grammy';
 import type { Category, TodoItem, CategoryStats } from './db.js';
 
 /**
- * Создает инлайн-клавиатуру для активного списка
+ * Builds the inline keyboard for the active list card.
  */
 export function buildListKeyboard(
   category: Category,
@@ -11,7 +11,7 @@ export function buildListKeyboard(
 ): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
-  // 1. Строка переключения категорий (Табы)
+  // 1. Category tabs row
   const shoppingDone = stats.shoppingDone;
   const shoppingTotal = stats.shoppingTotal;
   const taskDone = stats.taskDone;
@@ -30,14 +30,13 @@ export function buildListKeyboard(
     .text(taskLabel, 'tab:task')
     .row();
 
-  // 2. Список пунктов (каждый пункт - кликабельная кнопка для переключения статуса)
+  // 2. Interactive item buttons (clickable to toggle check/uncheck status)
   if (items.length > 0) {
-    // Ограничиваем до 20 элементов на экран для компактности Telegram клавиатуры
+    // Show up to 20 items per view to avoid Telegram payload limits
     const displayItems = items.slice(0, 20);
 
     for (const item of displayItems) {
       const icon = item.is_done ? '✅' : '⬜';
-      // Ограничиваем длину текста на кнопке Telegram (макс ~35 символов)
       const truncatedText = item.text.length > 35
         ? item.text.substring(0, 32) + '...'
         : item.text;
@@ -47,11 +46,11 @@ export function buildListKeyboard(
     }
 
     if (items.length > 20) {
-      keyboard.text(`... и еще ${items.length - 20} пунктов`, 'noop').row();
+      keyboard.text(`... and ${items.length - 20} more items`, 'noop').row();
     }
   }
 
-  // 3. Панель действий
+  // 3. Action controls
   if (items.length > 0) {
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
@@ -76,7 +75,7 @@ export function buildListKeyboard(
 }
 
 /**
- * Клавиатура подтверждения очистки списка
+ * Confirmation dialog keyboard for clearing category items.
  */
 export function buildConfirmClearKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()
@@ -85,7 +84,7 @@ export function buildConfirmClearKeyboard(category: Category): InlineKeyboard {
 }
 
 /**
- * Клавиатура подтверждения закрытия списка
+ * Confirmation dialog keyboard for closing the active list entity.
  */
 export function buildConfirmFinishKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()

@@ -4,15 +4,15 @@ import {
   initDatabase,
   getOrCreateUser,
   setUserCategory,
-  setLastListMessageId,
-  getLastListMessageId,
-  isListCompleted,
+  getOrCreateActiveList,
+  closeActiveList,
+  setListLastMessageId,
   addItems,
-  getItems,
+  getListItems,
   toggleItemDone,
-  clearCompletedItems,
-  clearAllCategoryItems,
-  getStats,
+  clearCompletedFromList,
+  clearCategoryFromList,
+  getListStats,
   type Category,
   type TodoItem,
 } from './db.js';
@@ -27,7 +27,7 @@ validateConfig();
 
 export const bot = new Bot(config.botToken);
 
-// Список чисто разговорных фраз для игнорирования в групповом чате (чтобы не реагировать на флуд)
+// Conversational chatter stop-words to ignore in group chats to avoid reacting to casual talk
 const CHAT_STOP_WORDS = /^(привет|хай|ку|здравствуйте|добрый день|как дела|ок|окей|ok|хорошо|ладно|понял|понятно|пон|спасибо|спс|спасиб|благодарю|да|нет|неа|ага|я дома|я скоро|я выехал|я на месте|пока|доброе утро|спокойной ночи|отлично|лол|кек|хаха|ха-ха|круто|класс|ясно|точно|согласен|плюс|минус|\?|!|\.|\+|-)$/iu;
 
 function isConversationalNoise(text: string): boolean {
@@ -36,7 +36,7 @@ function isConversationalNoise(text: string): boolean {
 }
 
 /**
- * Формирует текстовое сообщение со списком
+ * Formats the HTML text representation of the current list.
  */
 function renderListMessage(category: Category, items: TodoItem[], isGroup = false): string {
   const categoryTitle = category === 'shopping'
@@ -46,8 +46,8 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
 
   if (items.length === 0) {
     const hint = isGroup
-      ? '💡 Отправьте в группу сообщение (например: <code>купить сыр, хлеб</code>), чтобы добавить пункты в общий список!'
-      : '💡 Просто отправьте мне сообщение с текстом (через запятую, с новой строки или обычной фразой), и я добавлю пункты сюда!';
+      ? '💡 Отправьте сообщение в группу, чтобы добавить пункты в этот список!'
+      : '💡 Отправьте текст с пунктами (через запятую, с новой строки или фразой), чтобы добавить их сюда!';
     return `${header}<i>Список пока пуст.</i>\n\n${hint}`;
   }
 
@@ -62,7 +62,7 @@ function renderListMessage(category: Category, items: TodoItem[], isGroup = fals
 }
 
 /**
- * Отправляет или обновляет карточку со списком
+ * Renders or updates the interactive list card for the current active list entity.
  */
 async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId?: number) {
   const chatId = ctx.chat?.id;
@@ -78,9 +78,12 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
     await setUserCategory(chatId, targetCategory);
   }
 
+  // Obtain current active list entity
+  const activeList = await getOrCreateActiveList(chatId);
+
   const [items, stats] = await Promise.all([
-    getItems(chatId, targetCategory),
-    getStats(chatId),
+    getListItems(activeList.id, targetCategory),
+    getListStats(activeList.id),
   ]);
 
   const messageText = renderListMessage(targetCategory, items, isGroup);
@@ -92,12 +95,11 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
-      await setLastListMessageId(chatId, editMessageId);
+      await setListLastMessageId(activeList.id, editMessageId);
       return;
     } catch (e: any) {
-      // Игнорируем ошибку Telegram "message is not modified"
       if (!String(e?.message).includes('message is not modified')) {
-        console.error('Ошибка редактирования сообщения:', e);
+        console.error('Failed to edit message:', e);
       }
     }
   }
@@ -106,10 +108,10 @@ async function sendOrUpdateList(ctx: Context, category?: Category, editMessageId
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
-  await setLastListMessageId(chatId, sent.message_id);
+  await setListLastMessageId(activeList.id, sent.message_id);
 }
 
-// ---------------- КОМАНДЫ ---------------- //
+// ---------------- COMMAND HANDLERS ---------------- //
 
 bot.command('start', async (ctx) => {
   const chatId = ctx.chat.id;
@@ -117,27 +119,23 @@ bot.command('start', async (ctx) => {
 
   const aiStatus = config.isAiEnabled
     ? '✨ <b>AI-распознавание (Gemini):</b> включено'
-    : '⚙️ <b>Парсер:</b> быстрый локальный (без AI-ключа)';
+    : '⚙️ <b>Парсер:</b> быстрый локальный (без внешних API)';
 
   const welcome = `👋 <b>Привет! Я бот для покупок и дел.</b>
 
-Я умею читать обычные сообщения и автоматически создавать из них список покупок или задач.
+Я создаю списки покупок и задач и веду их как единую сущность:
+• Вы можете дополнять активный список любыми сообщениями
+• Список будет дополняться до тех пор, пока вы не нажмете кнопку <b>Закрыть список</b>
+• После закрытия следующее сообщение начнет новый список
 
 ${aiStatus}
 
-<b>Как со мной работать:</b>
-• Отправьте список через запятую:
-  <code>молоко, хлеб, сливочное масло, чай</code>
-• Или построчно со знаками <code>-</code> или цифрами:
-  <code>1. Заехать на автомойку</code>
-  <code>2. Забрать посылку</code>
-• Или свободной речью:
-  <code>Завтра нужно купить корм коту и позвонить врачу</code>
-• Или с префиксом категории:
-  <code>Покупки: сыр, помидоры</code>
-  <code>Дела: оплатить интернет, отправить отчет</code>
+<b>Как добавлять пункты:</b>
+• Просто пишите сообщение: <code>молоко, хлеб, сыр</code>
+• Или построчно со знаками <code>-</code> или цифрами
+• Или свободным текстом
 
-Управляйте списками кнопками ниже 👇`;
+Управляйте активным списком кнопками ниже 👇`;
 
   await ctx.reply(welcome, { parse_mode: 'HTML' });
   await sendOrUpdateList(ctx, 'shopping');
@@ -149,17 +147,13 @@ bot.command('help', async (ctx) => {
 /list — показать текущий активный список
 /shopping — открыть 🛒 Список покупок
 /tasks — открыть 📝 Список дел и задач
-/clear — удалить выполненные пункты
-/close — 🏁 закрыть и зафиксировать текущий список
+/clear — удалить выполненные пункты из активного списка
+/close — 🏁 закрыть текущий список (следующее сообщение начнет новый список)
 /export — экспортировать списки обычным текстом
-/stats — посмотреть статистику покупок и дел
+/stats — посмотреть статистику активного списка
 
-<b>Как добавлять записи:</b>
-Просто пишите мне текст сообщениями. Бот автоматически определит:
-• Товары и продукты отправятся в <b>🛒 Покупки</b>
-• Действия и поручения отправятся в <b>📝 Дела</b>
-
-Клик по кнопке с пунктом переключает статус (⬜ ↔ ✅).`;
+<b>Принцип работы:</b>
+Список живет как активная сущность. Любые сообщения дополняют его. Когда вы закончили покупки или дела, нажмите <b>«🏁 Закрыть список»</b>, и новый цикл начнется с чистого листа.`;
 
   await ctx.reply(helpText, { parse_mode: 'HTML' });
 });
@@ -179,7 +173,8 @@ bot.command(['tasks', 'todo'], async (ctx) => {
 bot.command('clear', async (ctx) => {
   const chatId = ctx.chat.id;
   const user = await getOrCreateUser(chatId);
-  const deleted = await clearCompletedItems(chatId, user.active_category);
+  const activeList = await getOrCreateActiveList(chatId);
+  const deleted = await clearCompletedFromList(activeList.id, user.active_category);
 
   const categoryName = user.active_category === 'shopping' ? 'покупок' : 'дел';
   if (deleted > 0) {
@@ -193,19 +188,38 @@ bot.command('clear', async (ctx) => {
   await sendOrUpdateList(ctx, user.active_category);
 });
 
+bot.command(['close', 'finish'], async (ctx) => {
+  const chatId = ctx.chat.id;
+  const activeList = await getOrCreateActiveList(chatId);
+  const stats = await getListStats(activeList.id);
+
+  await closeActiveList(chatId);
+
+  const total = stats.shoppingTotal + stats.taskTotal;
+  const done = stats.shoppingDone + stats.taskDone;
+
+  await ctx.reply(
+    `🏁 <b>Список успешно закрыт!</b>\n\n` +
+    `Всего было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
+    `💡 <i>Следующее сообщение с покупками или делами создаст новый список.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
 bot.command('export', async (ctx) => {
   const chatId = ctx.chat.id;
+  const activeList = await getOrCreateActiveList(chatId);
   const [shoppingItems, taskItems] = await Promise.all([
-    getItems(chatId, 'shopping'),
-    getItems(chatId, 'task'),
+    getListItems(activeList.id, 'shopping'),
+    getListItems(activeList.id, 'task'),
   ]);
 
   if (shoppingItems.length === 0 && taskItems.length === 0) {
-    await ctx.reply('Ваши списки пока пусты! Отправьте мне текст, чтобы добавить пункты.');
+    await ctx.reply('Активный список пуст.');
     return;
   }
 
-  let text = '📋 <b>Ваши списки:</b>\n\n';
+  let text = '📋 <b>Текущий активный список:</b>\n\n';
 
   if (shoppingItems.length > 0) {
     text += '<b>🛒 Список покупок:</b>\n';
@@ -231,14 +245,15 @@ bot.command('export', async (ctx) => {
 
 bot.command('stats', async (ctx) => {
   const chatId = ctx.chat.id;
-  const stats = await getStats(chatId);
+  const activeList = await getOrCreateActiveList(chatId);
+  const stats = await getListStats(activeList.id);
 
-  const statsText = `📊 <b>Статистика ваших списков:</b>
+  const statsText = `📊 <b>Статистика текущего активного списка:</b>
 
 🛒 <b>Покупки:</b>
 • Всего: ${stats.shoppingTotal}
 • Куплено: ${stats.shoppingDone}
-• Осталось купить: ${stats.shoppingTotal - stats.shoppingDone}
+• Осталось: ${stats.shoppingTotal - stats.shoppingDone}
 
 📝 <b>Дела и задачи:</b>
 • Всего: ${stats.taskTotal}
@@ -248,51 +263,29 @@ bot.command('stats', async (ctx) => {
   await ctx.reply(statsText, { parse_mode: 'HTML' });
 });
 
-bot.command(['close', 'finish'], async (ctx) => {
-  const chatId = ctx.chat.id;
-  const user = await getOrCreateUser(chatId);
-  const category = user.active_category;
-  const stats = await getStats(chatId);
-
-  const total = category === 'shopping' ? stats.shoppingTotal : stats.taskTotal;
-  const done = category === 'shopping' ? stats.shoppingDone : stats.taskDone;
-
-  await clearAllCategoryItems(chatId, category);
-  await setLastListMessageId(chatId, null);
-
-  const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
-  await ctx.reply(
-    `🏁 <b>${title} закрыт!</b>\n\n` +
-    `Было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
-    `💡 <i>Отправьте новое сообщение в чат, чтобы начать новый список.</i>`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-// ---------------- ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ---------------- //
+// ---------------- MESSAGE TEXT PROCESSING ---------------- //
 
 bot.on('message:text', async (ctx) => {
   let rawText = ctx.message.text.trim();
-  if (rawText.startsWith('/')) return; // Команды обрабатываются отдельно
+  if (rawText.startsWith('/')) return; // Ignore slash commands
 
   const chatId = ctx.chat.id;
   const isGroup = ctx.chat.type !== 'private';
   const botUsername = ctx.me.username;
 
-  // Проверяем, упомянут ли бот в сообщении (например, @botname молоко, сыр)
+  // Strip @botname mention if present
   const isMentioned = Boolean(botUsername && rawText.includes(`@${botUsername}`));
   if (isMentioned && botUsername) {
     rawText = rawText.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
   }
 
-  // Проверяем, является ли сообщение ответом на сообщение бота
+  // Check if message is a reply to the bot
   const isReplyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
 
-  // В группе отсекаем только явный разговорный флуд ("привет", "ок", "я скоро буду", и т.п.),
-  // если сообщение не адресовано напрямую боту
+  // In groups, ignore conversational chatter ("hello", "ok", "bye") unless directed at bot
   if (isGroup && !isMentioned && !isReplyToBot) {
     if (isConversationalNoise(rawText)) {
-      return; // Игнорируем обычный диалог в группе
+      return;
     }
   }
 
@@ -301,36 +294,22 @@ bot.on('message:text', async (ctx) => {
   const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
   const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
-  // Индикация набора текста
   await ctx.replyWithChatAction('typing');
 
   const parsedItems = await parseMessage(rawText, user.active_category);
 
   if (parsedItems.length === 0) {
     if (!isGroup) {
-      await ctx.reply('Не удалось распознать пункты в сообщении. Попробуйте написать список через запятую или построчно.');
+      await ctx.reply('Не удалось распознать пункты. Отправьте список через запятую или построчно.');
     }
     return;
   }
 
-  const shoppingAdded = parsedItems.filter((i) => i.category === 'shopping');
-  const tasksAdded = parsedItems.filter((i) => i.category === 'task');
-  const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
+  // Always append items to the currently active list entity
+  const activeList = await getOrCreateActiveList(chatId);
 
-  // 1. Проверяем состояние текущего списка ДО добавления новых пунктов
-  const existingItems = await getItems(chatId, primaryCategory);
-  const hasIncompleteItems = existingItems.some((i) => !i.is_done);
-  const isCurrentListFinished = existingItems.length > 0 && !hasIncompleteItems;
-
-  // Если текущий список был полностью завершен-выполнен,
-  // то для нового сообщения очищаем старые выполненные пункты и начинаем список заново!
-  if (isCurrentListFinished) {
-    await clearCompletedItems(chatId, primaryCategory);
-    await setLastListMessageId(chatId, null);
-  }
-
-  // 2. Добавляем новые пункты в БД
   await addItems(
+    activeList.id,
     chatId,
     parsedItems.map((p) => ({
       category: p.category,
@@ -338,7 +317,9 @@ bot.on('message:text', async (ctx) => {
     }))
   );
 
-  // 3. Формируем краткий отчёт о том, что куда попало
+  const shoppingAdded = parsedItems.filter((i) => i.category === 'shopping');
+  const tasksAdded = parsedItems.filter((i) => i.category === 'task');
+  const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
 
   let report = '✅ <b>Добавлено:</b>\n';
   if (shoppingAdded.length > 0) {
@@ -351,27 +332,23 @@ bot.on('message:text', async (ctx) => {
   const parserBadge = parsedItems[0]?.extractedBy === 'ai' ? ' <i>(✨ AI)</i>' : '';
   report += parserBadge;
 
-  // 4. Если текущий список НЕ был завершен (в нем оставались невыполненные пункты),
-  // пробуем ОБНОВИТЬ существующее сообщение со списком выше!
+  // If the active list already had an open Telegram card message, edit it in-place
   let updatedExistingMessage = false;
-  const lastMsgId = await getLastListMessageId(chatId);
-
-  if (hasIncompleteItems && lastMsgId) {
+  if (activeList.last_message_id) {
     try {
       const [updatedItems, stats] = await Promise.all([
-        getItems(chatId, primaryCategory),
-        getStats(chatId),
+        getListItems(activeList.id, primaryCategory),
+        getListStats(activeList.id),
       ]);
       const messageText = renderListMessage(primaryCategory, updatedItems, isGroup);
       const keyboard = buildListKeyboard(primaryCategory, updatedItems, stats);
 
-      await ctx.api.editMessageText(chatId, lastMsgId, messageText, {
+      await ctx.api.editMessageText(chatId, activeList.last_message_id, messageText, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
       updatedExistingMessage = true;
     } catch (e: any) {
-      // Сообщение могло быть удалено пользователем или устареть (>48ч в Telegram)
       updatedExistingMessage = false;
     }
   }
@@ -385,7 +362,7 @@ bot.on('message:text', async (ctx) => {
   }
 });
 
-// ---------------- CALLBACK QUERY (КНОПКИ) ---------------- //
+// ---------------- CALLBACK QUERY HANDLERS ---------------- //
 
 bot.on('callback_query:data', async (ctx) => {
   const data = ctx.callbackQuery.data;
@@ -397,13 +374,12 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Заглушка
   if (data === 'noop') {
     await ctx.answerCallbackQuery();
     return;
   }
 
-  // Переключение табов: tab:shopping / tab:task
+  // Switch category tabs: tab:shopping / tab:task
   if (data.startsWith('tab:')) {
     const category = data.split(':')[1] as Category;
     await setUserCategory(chatId, category);
@@ -412,7 +388,7 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Переключение статуса пункта: toggle:<id>
+  // Toggle item done status: toggle:<id>
   if (data.startsWith('toggle:')) {
     const itemId = Number(data.split(':')[1]);
     const newStatus = await toggleItemDone(chatId, itemId);
@@ -424,10 +400,11 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Удаление выполненных: clear_done:<category>
+  // Delete completed items: clear_done:<category>
   if (data.startsWith('clear_done:')) {
     const category = data.split(':')[1] as Category;
-    const deleted = await clearCompletedItems(chatId, category);
+    const activeList = await getOrCreateActiveList(chatId);
+    const deleted = await clearCompletedFromList(activeList.id, category);
     await ctx.answerCallbackQuery({
       text: deleted > 0 ? `Удалено выполненных: ${deleted}` : 'Нет выполненных пунктов',
     });
@@ -435,7 +412,7 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Запрос подтверждения закрытия списка: confirm_finish:<category>
+  // Close active list prompt: confirm_finish:<category>
   if (data.startsWith('confirm_finish:')) {
     const category = data.split(':')[1] as Category;
     const catName = category === 'shopping' ? 'покупок' : 'дел';
@@ -443,7 +420,7 @@ bot.on('callback_query:data', async (ctx) => {
     await ctx.api.editMessageText(
       chatId,
       messageId,
-      `🏁 <b>Вы уверены, что хотите закрыть текущий список ${catName}?</b>\n\nСписок будет зафиксирован и закрыт, а следующее сообщение начнёт новый список.`,
+      `🏁 <b>Вы уверены, что хотите закрыть текущий список ${catName}?</b>\n\nСписок будет зафиксирован и закрыт, а следующее сообщение создаст новый список.`,
       {
         parse_mode: 'HTML',
         reply_markup: buildConfirmFinishKeyboard(category),
@@ -452,21 +429,22 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Подтверждение закрытия списка: do_finish:<category>
+  // Execute close active list: do_finish:<category>
   if (data.startsWith('do_finish:')) {
     const category = data.split(':')[1] as Category;
-    const stats = await getStats(chatId);
+    const activeList = await getOrCreateActiveList(chatId);
+    const stats = await getListStats(activeList.id);
     const total = category === 'shopping' ? stats.shoppingTotal : stats.taskTotal;
     const done = category === 'shopping' ? stats.shoppingDone : stats.taskDone;
 
-    await clearAllCategoryItems(chatId, category);
-    await setLastListMessageId(chatId, null);
+    // Close the list entity completely
+    await closeActiveList(chatId);
 
     await ctx.answerCallbackQuery({ text: 'Список закрыт! 🏁' });
 
     const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
     const closedText = `🏁 <b>${title} успешно закрыт!</b>\n\n` +
-      `Всего пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
+      `Всего было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
       `💡 <i>Отправьте новое сообщение с текстом, чтобы начать новый список!</i>`;
 
     const closedKeyboard = new InlineKeyboard()
@@ -479,7 +457,7 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Запрос подтверждения очистки: confirm_clear:<category>
+  // Clear category items prompt: confirm_clear:<category>
   if (data.startsWith('confirm_clear:')) {
     const category = data.split(':')[1] as Category;
     const catName = category === 'shopping' ? 'покупок' : 'дел';
@@ -487,7 +465,7 @@ bot.on('callback_query:data', async (ctx) => {
     await ctx.api.editMessageText(
       chatId,
       messageId,
-      `⚠️ <b>Вы уверены, что хотите полностью очистить весь список ${catName}?</b>`,
+      `⚠️ <b>Вы уверены, что хотите полностью очистить весь активный список ${catName}?</b>`,
       {
         parse_mode: 'HTML',
         reply_markup: buildConfirmClearKeyboard(category),
@@ -496,19 +474,21 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Подтверждение очистки всего списка: do_clear:<category>
+  // Execute clear category items: do_clear:<category>
   if (data.startsWith('do_clear:')) {
     const category = data.split(':')[1] as Category;
-    const deleted = await clearAllCategoryItems(chatId, category);
+    const activeList = await getOrCreateActiveList(chatId);
+    const deleted = await clearCategoryFromList(activeList.id, category);
     await ctx.answerCallbackQuery({ text: `Список очищен (удалено: ${deleted})` });
     await sendOrUpdateList(ctx, category, messageId);
     return;
   }
 
-  // Экспорт текстом: export:<category>
+  // Export as text: export:<category>
   if (data.startsWith('export:')) {
     const category = data.split(':')[1] as Category;
-    const items = await getItems(chatId, category);
+    const activeList = await getOrCreateActiveList(chatId);
+    const items = await getListItems(activeList.id, category);
     await ctx.answerCallbackQuery();
 
     if (items.length === 0) {
@@ -528,7 +508,7 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
-  // Обновление: refresh:<category>
+  // Refresh view: refresh:<category>
   if (data.startsWith('refresh:')) {
     const category = data.split(':')[1] as Category;
     await ctx.answerCallbackQuery({ text: 'Обновлено 🔄' });
@@ -539,24 +519,23 @@ bot.on('callback_query:data', async (ctx) => {
   await ctx.answerCallbackQuery();
 });
 
-// ---------------- ОБРАБОТКА ОШИБОК И ЗАПУСК ---------------- //
+// ---------------- ERROR HANDLING AND STARTUP ---------------- //
 
 bot.catch((err) => {
-  console.error(`Ошибка при обработке события ${err.ctx.update.update_id}:`, err.error);
+  console.error(`Error processing update ${err.ctx.update.update_id}:`, err.error);
 });
 
 async function main() {
-  console.log('🚀 Инициализация базы данных SQLite...');
+  console.log('Initializing SQLite database...');
   await initDatabase();
 
-  console.log('🤖 Запуск Telegram бота...');
+  console.log('Starting Telegram bot...');
   if (config.isAiEnabled) {
-    console.log('✨ Gemini AI интеграция: АКТИВНА');
+    console.log('Gemini AI integration: ENABLED');
   } else {
-    console.log('⚙️ Gemini AI: не настроен (используется быстрый локальный парсер)');
+    console.log('Gemini AI: not configured (using local parser)');
   }
 
-  // Установка команд в меню Telegram
   try {
     await bot.api.setMyCommands([
       { command: 'list', description: 'Показать текущий список' },
@@ -569,17 +548,16 @@ async function main() {
       { command: 'help', description: '📖 Справка и помощь' },
     ]);
   } catch (e) {
-    console.warn('Не удалось зарегистрировать меню команд (проверьте правильность токена).');
+    console.warn('Could not register bot commands menu with Telegram API.');
   }
 
   bot.start({
     onStart: (botInfo) => {
-      console.log(`✅ Бот @${botInfo.username} успешно запущен и готов к работе!`);
+      console.log(`Bot @${botInfo.username} is running and ready!`);
     },
   });
 }
 
-// Запускаем бота, если запущен напрямую
 main().catch((err) => {
-  console.error('Критическая ошибка запуска:', err);
+  console.error('Fatal startup error:', err);
 });

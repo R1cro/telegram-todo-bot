@@ -1,13 +1,13 @@
 import { parseLocal } from '../src/parser.js';
 
-console.log('🧪 Тестирование локального парсера...\n');
+console.log('🧪 Running local parser test suite...\n');
 
 const testCases = [
   {
     input: 'молоко, хлеб, сыр, яйца 10шт, сливочное масло 82.5%',
     defaultCat: 'shopping' as const,
     expectedCount: 5,
-    description: 'Список покупок через запятую',
+    description: 'Comma-separated grocery list',
   },
   {
     input: `1. Позвонить доктору
@@ -15,7 +15,7 @@ const testCases = [
 3) Оплатить квитанцию`,
     defaultCat: 'task' as const,
     expectedCount: 3,
-    description: 'Нумерованный список задач',
+    description: 'Numbered task list',
   },
   {
     input: `- Сыр гауда
@@ -24,31 +24,31 @@ const testCases = [
 — Майонез`,
     defaultCat: 'shopping' as const,
     expectedCount: 4,
-    description: 'Маркированный список с разными буллетами',
+    description: 'Bulleted list with various bullet symbols',
   },
   {
     input: 'Покупки: чай зеленый, кофе в зернах, печенье',
-    defaultCat: 'task' as const, // проверяем, что префикс перебивает дефолт
+    defaultCat: 'task' as const, // Category prefix overrides default category
     expectedCount: 3,
-    description: 'Префикс "Покупки:"',
+    description: 'Explicit "Покупки:" prefix',
   },
   {
     input: 'Дела: помыть машину, заехать к родителям',
-    defaultCat: 'shopping' as const, // префикс должен перебить
+    defaultCat: 'shopping' as const, // Category prefix overrides default category
     expectedCount: 2,
-    description: 'Префикс "Дела:"',
+    description: 'Explicit "Дела:" prefix',
   },
   {
     input: 'купить колбасу, сосиски и сделать отчет по работе',
     defaultCat: 'shopping' as const,
-    expectedCount: 3, // по запятой и союзу "и" с раздельными категориями
-    description: 'Смешанные покупки и задачи в одном предложении',
+    expectedCount: 3, // Comma and conjunction "и" separating distinct items
+    description: 'Mixed grocery items and tasks in single sentence',
   },
   {
-    input: 'Грудка филе',
+    input: 'Свежее молоко',
     defaultCat: 'shopping' as const,
     expectedCount: 1,
-    description: 'Одиночный пункт из нескольких слов (Грудка филе)',
+    description: 'Multi-word single item',
   },
 ];
 
@@ -59,9 +59,9 @@ for (const tc of testCases) {
   const ok = result.length === tc.expectedCount;
   if (ok) {
     passed++;
-    console.log(`✅ ${tc.description}: извлечено ${result.length} элементов`);
+    console.log(`✅ Passed: ${tc.description} (extracted ${result.length} items)`);
   } else {
-    console.error(`❌ ${tc.description}: ожидалось ${tc.expectedCount}, получено ${result.length}`);
+    console.error(`❌ Failed: ${tc.description} (expected ${tc.expectedCount}, received ${result.length})`);
   }
   for (const item of result) {
     console.log(`   [${item.category === 'shopping' ? '🛒' : '📝'}] ${item.text}`);
@@ -69,4 +69,7 @@ for (const tc of testCases) {
   console.log('');
 }
 
-console.log(`Итог тестов: ${passed}/${testCases.length} пройдено успешно!`);
+console.log(`Test results: ${passed}/${testCases.length} passed.`);
+if (passed !== testCases.length) {
+  process.exit(1);
+}

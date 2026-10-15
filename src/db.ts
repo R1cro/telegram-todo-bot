@@ -2,9 +2,20 @@ import { createClient, type Client } from '@libsql/client';
 import { config } from './config.js';
 
 export type Category = 'shopping' | 'task';
+export type ListStatus = 'active' | 'closed';
+
+export interface TodoList {
+  id: number;
+  chat_id: number;
+  status: ListStatus;
+  last_message_id?: number | null;
+  created_at: string;
+  closed_at?: string | null;
+}
 
 export interface TodoItem {
   id: number;
+  list_id: number;
   chat_id: number;
   category: Category;
   text: string;
@@ -17,7 +28,6 @@ export interface UserSettings {
   username?: string;
   first_name?: string;
   active_category: Category;
-  last_list_message_id?: number | null;
   created_at: string;
 }
 
@@ -39,30 +49,44 @@ export function getDb(): Client {
   return dbClient;
 }
 
+/**
+ * Initializes database tables and indices.
+ */
 export async function initDatabase(): Promise<void> {
   const db = getDb();
 
+  // Users / Chats table
   await db.execute(`
     CREATE TABLE IF NOT EXISTS users (
       chat_id INTEGER PRIMARY KEY,
       username TEXT,
       first_name TEXT,
       active_category TEXT NOT NULL DEFAULT 'shopping',
-      last_list_message_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
-  // Мягкая миграция: добавляем колонку в существующую базу, если её ещё нет
-  try {
-    await db.execute(`ALTER TABLE users ADD COLUMN last_list_message_id INTEGER`);
-  } catch {
-    // Колонка уже существует
-  }
+  // Explicit TodoList entity table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS todo_lists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      last_message_id INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      closed_at DATETIME
+    )
+  `);
 
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_todo_lists_chat_status ON todo_lists(chat_id, status)
+  `);
+
+  // Items table linked to specific todo_list
   await db.execute(`
     CREATE TABLE IF NOT EXISTS items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      list_id INTEGER,
       chat_id INTEGER NOT NULL,
       category TEXT NOT NULL,
       text TEXT NOT NULL,
@@ -71,11 +95,21 @@ export async function initDatabase(): Promise<void> {
     )
   `);
 
+  // Soft migration in case items table existed without list_id
+  try {
+    await db.execute(`ALTER TABLE items ADD COLUMN list_id INTEGER`);
+  } catch {
+    // Column already exists
+  }
+
   await db.execute(`
-    CREATE INDEX IF NOT EXISTS idx_items_chat_category ON items(chat_id, category)
+    CREATE INDEX IF NOT EXISTS idx_items_list_category ON items(list_id, category)
   `);
 }
 
+/**
+ * Retrieves or registers user/chat preferences.
+ */
 export async function getOrCreateUser(
   chatId: number,
   username?: string,
@@ -95,9 +129,6 @@ export async function getOrCreateUser(
       username: row.username ? String(row.username) : undefined,
       first_name: row.first_name ? String(row.first_name) : undefined,
       active_category: (row.active_category as Category) || 'shopping',
-      last_list_message_id: row.last_list_message_id !== null && row.last_list_message_id !== undefined
-        ? Number(row.last_list_message_id)
-        : null,
       created_at: String(row.created_at),
     };
   }
@@ -112,11 +143,13 @@ export async function getOrCreateUser(
     username,
     first_name: firstName,
     active_category: 'shopping',
-    last_list_message_id: null,
     created_at: new Date().toISOString(),
   };
 }
 
+/**
+ * Sets active UI category (shopping or task) for user/chat.
+ */
 export async function setUserCategory(chatId: number, category: Category): Promise<void> {
   const db = getDb();
   await db.execute({
@@ -125,33 +158,93 @@ export async function setUserCategory(chatId: number, category: Category): Promi
   });
 }
 
-export async function setLastListMessageId(chatId: number, messageId: number | null): Promise<void> {
-  const db = getDb();
-  await db.execute({
-    sql: 'UPDATE users SET last_list_message_id = ? WHERE chat_id = ?',
-    args: [messageId, chatId],
-  });
-}
-
-export async function getLastListMessageId(chatId: number): Promise<number | null> {
+/**
+ * Finds current active list entity for a chat.
+ */
+export async function getActiveList(chatId: number): Promise<TodoList | null> {
   const db = getDb();
   const res = await db.execute({
-    sql: 'SELECT last_list_message_id FROM users WHERE chat_id = ?',
+    sql: `SELECT * FROM todo_lists 
+          WHERE chat_id = ? AND status = 'active' 
+          ORDER BY id DESC LIMIT 1`,
     args: [chatId],
   });
-  if (res.rows.length === 0 || res.rows[0].last_list_message_id === null || res.rows[0].last_list_message_id === undefined) {
-    return null;
-  }
-  return Number(res.rows[0].last_list_message_id);
+
+  if (res.rows.length === 0) return null;
+
+  const row = res.rows[0];
+  return {
+    id: Number(row.id),
+    chat_id: Number(row.chat_id),
+    status: row.status as ListStatus,
+    last_message_id: row.last_message_id !== null && row.last_message_id !== undefined
+      ? Number(row.last_message_id)
+      : null,
+    created_at: String(row.created_at),
+    closed_at: row.closed_at ? String(row.closed_at) : null,
+  };
 }
 
-export async function isListCompleted(chatId: number, category: Category): Promise<boolean> {
-  const items = await getItems(chatId, category);
-  if (items.length === 0) return true;
-  return items.every((i) => i.is_done);
+/**
+ * Gets the current active list or creates a brand new active list entity.
+ */
+export async function getOrCreateActiveList(chatId: number): Promise<TodoList> {
+  const active = await getActiveList(chatId);
+  if (active) return active;
+
+  const db = getDb();
+  const res = await db.execute({
+    sql: `INSERT INTO todo_lists (chat_id, status) VALUES (?, 'active')`,
+    args: [chatId],
+  });
+
+  const newListId = Number(res.lastInsertRowid);
+  return {
+    id: newListId,
+    chat_id: chatId,
+    status: 'active',
+    last_message_id: null,
+    created_at: new Date().toISOString(),
+    closed_at: null,
+  };
 }
 
+/**
+ * Closes the active list entity for a chat.
+ */
+export async function closeActiveList(chatId: number): Promise<TodoList | null> {
+  const active = await getActiveList(chatId);
+  if (!active) return null;
+
+  const db = getDb();
+  await db.execute({
+    sql: `UPDATE todo_lists SET status = 'closed', closed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    args: [active.id],
+  });
+
+  return {
+    ...active,
+    status: 'closed',
+    closed_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * Updates Telegram message id associated with the list card.
+ */
+export async function setListLastMessageId(listId: number, messageId: number | null): Promise<void> {
+  const db = getDb();
+  await db.execute({
+    sql: 'UPDATE todo_lists SET last_message_id = ? WHERE id = ?',
+    args: [messageId, listId],
+  });
+}
+
+/**
+ * Appends items to an active list entity.
+ */
 export async function addItems(
+  listId: number,
   chatId: number,
   items: Array<{ category: Category; text: string }>
 ): Promise<number[]> {
@@ -163,8 +256,8 @@ export async function addItems(
     if (!cleanText) continue;
 
     const res = await db.execute({
-      sql: 'INSERT INTO items (chat_id, category, text, is_done) VALUES (?, ?, ?, 0)',
-      args: [chatId, item.category, cleanText],
+      sql: 'INSERT INTO items (list_id, chat_id, category, text, is_done) VALUES (?, ?, ?, ?, 0)',
+      args: [listId, chatId, item.category, cleanText],
     });
     if (res.lastInsertRowid !== undefined) {
       addedIds.push(Number(res.lastInsertRowid));
@@ -174,17 +267,21 @@ export async function addItems(
   return addedIds;
 }
 
-export async function getItems(chatId: number, category: Category): Promise<TodoItem[]> {
+/**
+ * Gets items belonging to a specific list and category.
+ */
+export async function getListItems(listId: number, category: Category): Promise<TodoItem[]> {
   const db = getDb();
   const res = await db.execute({
     sql: `SELECT * FROM items 
-          WHERE chat_id = ? AND category = ? 
-          ORDER BY is_done ASC, id DESC`,
-    args: [chatId, category],
+          WHERE list_id = ? AND category = ? 
+          ORDER BY is_done ASC, id ASC`,
+    args: [listId, category],
   });
 
   return res.rows.map((row) => ({
     id: Number(row.id),
+    list_id: Number(row.list_id),
     chat_id: Number(row.chat_id),
     category: row.category as Category,
     text: String(row.text),
@@ -193,6 +290,9 @@ export async function getItems(chatId: number, category: Category): Promise<Todo
   }));
 }
 
+/**
+ * Toggles an item between done and undone.
+ */
 export async function toggleItemDone(chatId: number, itemId: number): Promise<boolean | null> {
   const db = getDb();
   const existing = await db.execute({
@@ -213,34 +313,34 @@ export async function toggleItemDone(chatId: number, itemId: number): Promise<bo
   return newStatus === 1;
 }
 
-export async function deleteItem(chatId: number, itemId: number): Promise<boolean> {
+/**
+ * Removes completed items from a specific list entity.
+ */
+export async function clearCompletedFromList(listId: number, category: Category): Promise<number> {
   const db = getDb();
   const res = await db.execute({
-    sql: 'DELETE FROM items WHERE id = ? AND chat_id = ?',
-    args: [itemId, chatId],
-  });
-  return res.rowsAffected > 0;
-}
-
-export async function clearCompletedItems(chatId: number, category: Category): Promise<number> {
-  const db = getDb();
-  const res = await db.execute({
-    sql: 'DELETE FROM items WHERE chat_id = ? AND category = ? AND is_done = 1',
-    args: [chatId, category],
+    sql: 'DELETE FROM items WHERE list_id = ? AND category = ? AND is_done = 1',
+    args: [listId, category],
   });
   return res.rowsAffected;
 }
 
-export async function clearAllCategoryItems(chatId: number, category: Category): Promise<number> {
+/**
+ * Removes all items of a category from a specific list entity.
+ */
+export async function clearCategoryFromList(listId: number, category: Category): Promise<number> {
   const db = getDb();
   const res = await db.execute({
-    sql: 'DELETE FROM items WHERE chat_id = ? AND category = ?',
-    args: [chatId, category],
+    sql: 'DELETE FROM items WHERE list_id = ? AND category = ?',
+    args: [listId, category],
   });
   return res.rowsAffected;
 }
 
-export async function getStats(chatId: number): Promise<CategoryStats> {
+/**
+ * Calculates item counts and completion stats for a list entity.
+ */
+export async function getListStats(listId: number): Promise<CategoryStats> {
   const db = getDb();
   const res = await db.execute({
     sql: `
@@ -249,10 +349,10 @@ export async function getStats(chatId: number): Promise<CategoryStats> {
         COUNT(*) as total,
         SUM(CASE WHEN is_done = 1 THEN 1 ELSE 0 END) as done
       FROM items
-      WHERE chat_id = ?
+      WHERE list_id = ?
       GROUP BY category
     `,
-    args: [chatId],
+    args: [listId],
   });
 
   const stats: CategoryStats = {

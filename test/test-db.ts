@@ -2,97 +2,137 @@ import {
   initDatabase,
   getOrCreateUser,
   setUserCategory,
-  setLastListMessageId,
-  getLastListMessageId,
-  isListCompleted,
+  getActiveList,
+  getOrCreateActiveList,
+  closeActiveList,
+  setListLastMessageId,
   addItems,
-  getItems,
+  getListItems,
   toggleItemDone,
-  clearCompletedItems,
-  getStats,
-  clearAllCategoryItems,
+  clearCompletedFromList,
+  clearCategoryFromList,
+  getListStats,
 } from '../src/db.js';
 
-console.log('🧪 Тестирование SQLite базы данных...\n');
+console.log('🧪 Running SQLite database entity lifecycle test suite...\n');
 
 async function run() {
   await initDatabase();
-  console.log('✅ Инициализация таблиц прошла успешно');
+  console.log('✅ Database schema initialized successfully');
 
-  const testChatId = 99999999;
+  const testChatId = 77777777;
 
-  // 1. Создание/получение пользователя
-  const user = await getOrCreateUser(testChatId, 'testuser', 'Тестер');
-  console.log(`✅ Пользователь создан: chat_id=${user.chat_id}, active_category=${user.active_category}`);
+  // 1. User creation and category configuration
+  const user = await getOrCreateUser(testChatId, 'tester', 'Test User');
+  console.log(`✅ User verified: chat_id=${user.chat_id}, active_category=${user.active_category}`);
 
-  // Очистим перед тестом
-  await clearAllCategoryItems(testChatId, 'shopping');
-  await clearAllCategoryItems(testChatId, 'task');
-
-  // 2. Смена категории
   await setUserCategory(testChatId, 'task');
-  const userAfterSwitch = await getOrCreateUser(testChatId);
-  console.log(`✅ Смена категории: active_category=${userAfterSwitch.active_category}`);
+  const updatedUser = await getOrCreateUser(testChatId);
+  if (updatedUser.active_category !== 'task') {
+    throw new Error('User category update failed');
+  }
+  console.log(`✅ Category updated: active_category=${updatedUser.active_category}`);
 
-  // 3. Добавление пунктов
-  const itemIds = await addItems(testChatId, [
-    { category: 'shopping', text: 'Хлеб бородинский' },
-    { category: 'shopping', text: 'Молоко 3.2%' },
-    { category: 'task', text: 'Позвонить бухгалтеру' },
+  // 2. Active TodoList entity creation
+  const initialActive = await getActiveList(testChatId);
+  if (initialActive) {
+    await closeActiveList(testChatId);
+  }
+
+  const list1 = await getOrCreateActiveList(testChatId);
+  console.log(`✅ Active list created: id=${list1.id}, status=${list1.status}`);
+  if (list1.status !== 'active') {
+    throw new Error('Expected initial list status to be active');
+  }
+
+  // Verify getActiveList returns the same entity
+  const fetchedActive = await getActiveList(testChatId);
+  if (!fetchedActive || fetchedActive.id !== list1.id) {
+    throw new Error('getActiveList did not return the matching active list');
+  }
+
+  // 3. Appending items to active list entity
+  const addedIds = await addItems(list1.id, testChatId, [
+    { category: 'shopping', text: 'Apples' },
+    { category: 'shopping', text: 'Bread' },
+    { category: 'task', text: 'Pay utility bills' },
   ]);
-  console.log(`✅ Добавлено пунктов: ${itemIds.length}`);
+  console.log(`✅ Appended ${addedIds.length} items to active list ${list1.id}`);
 
-  // 4. Получение пунктов
-  const shoppingItems = await getItems(testChatId, 'shopping');
-  const taskItems = await getItems(testChatId, 'task');
-  console.log(`✅ Получено: покупок=${shoppingItems.length}, дел=${taskItems.length}`);
+  // 4. Retrieving items scoped to the active list
+  const shoppingItems = await getListItems(list1.id, 'shopping');
+  const taskItems = await getListItems(list1.id, 'task');
+  console.log(`✅ Retrieved items: shopping=${shoppingItems.length}, tasks=${taskItems.length}`);
+  if (shoppingItems.length !== 2 || taskItems.length !== 1) {
+    throw new Error('Unexpected item counts returned from getListItems');
+  }
 
-  // 5. Переключение статуса выполнения (toggle)
-  const firstItemId = shoppingItems[0].id;
-  const status1 = await toggleItemDone(testChatId, firstItemId);
-  console.log(`✅ Переключение статуса id=${firstItemId}: is_done=${status1}`);
+  // 5. Toggling completion status
+  const firstShopping = shoppingItems[0];
+  const toggled = await toggleItemDone(testChatId, firstShopping.id);
+  console.log(`✅ Toggled item ${firstShopping.id}: is_done=${toggled}`);
+  if (!toggled) {
+    throw new Error('Expected item to be toggled to completed');
+  }
 
-  // 6. Проверка статистики
-  const stats = await getStats(testChatId);
-  console.log(`✅ Статистика: Покупки ${stats.shoppingDone}/${stats.shoppingTotal}, Дела ${stats.taskDone}/${stats.taskTotal}`);
+  // 6. Checking stats for active list
+  const stats = await getListStats(list1.id);
+  console.log(`✅ List stats: Shopping (${stats.shoppingDone}/${stats.shoppingTotal}), Tasks (${stats.taskDone}/${stats.taskTotal})`);
+  if (stats.shoppingTotal !== 2 || stats.shoppingDone !== 1 || stats.taskTotal !== 1) {
+    throw new Error('Unexpected statistics calculated');
+  }
 
-  // 7. Очистка выполненных
-  const deletedDone = await clearCompletedItems(testChatId, 'shopping');
-  console.log(`✅ Очистка выполненных: удалено ${deletedDone}`);
+  // 7. Tracking Telegram message ID for active list
+  await setListLastMessageId(list1.id, 54321);
+  const reloadedList = await getActiveList(testChatId);
+  if (reloadedList?.last_message_id !== 54321) {
+    throw new Error('Failed to update and persist last_message_id');
+  }
+  console.log(`✅ Persisted message ID ${reloadedList.last_message_id} on list ${list1.id}`);
 
-  // 8. Финальная проверка количества
-  const remainingShopping = await getItems(testChatId, 'shopping');
-  console.log(`✅ Осталось покупок: ${remainingShopping.length}`);
+  // 8. Clearing completed items from active list
+  const removedCompleted = await clearCompletedFromList(list1.id, 'shopping');
+  console.log(`✅ Cleared completed items: removed=${removedCompleted}`);
+  const remainingShopping = await getListItems(list1.id, 'shopping');
+  if (remainingShopping.length !== 1) {
+    throw new Error('Expected 1 active shopping item remaining');
+  }
 
-  // 9. Тестирование отслеживания ID сообщения списка
-  await setLastListMessageId(testChatId, 12345);
-  const savedMsgId = await getLastListMessageId(testChatId);
-  console.log(`✅ Отслеживание message_id списка: сохранено 12345, получено ${savedMsgId}`);
+  // 9. Closing active list entity
+  const closed = await closeActiveList(testChatId);
+  console.log(`✅ Closed active list: id=${closed?.id}, status=${closed?.status}`);
+  if (closed?.status !== 'closed') {
+    throw new Error('Expected closed list status');
+  }
 
-  // 10. Тестирование проверки завершенности списка (isListCompleted)
-  await clearAllCategoryItems(testChatId, 'shopping');
-  const emptyCheck = await isListCompleted(testChatId, 'shopping');
-  console.log(`✅ Пустой список завершен: ${emptyCheck}`);
+  const noActive = await getActiveList(testChatId);
+  if (noActive !== null) {
+    throw new Error('Expected no active list after closing');
+  }
+  console.log('✅ Verified no active list remains open after closing');
 
-  const [idA, idB] = await addItems(testChatId, [
-    { category: 'shopping', text: 'Пункт 1' },
-    { category: 'shopping', text: 'Пункт 2' },
-  ]);
-  const incompleteCheck = await isListCompleted(testChatId, 'shopping');
-  console.log(`✅ Список с невыполненными пунктами НЕ завершен: ${!incompleteCheck}`);
+  // 10. Verification of new list creation cycle after closing
+  const list2 = await getOrCreateActiveList(testChatId);
+  console.log(`✅ New active list created after close: id=${list2.id}`);
+  if (list2.id === list1.id) {
+    throw new Error('Expected a fresh list id after closing previous list');
+  }
 
-  await toggleItemDone(testChatId, idA);
-  await toggleItemDone(testChatId, idB);
-  const completeCheck = await isListCompleted(testChatId, 'shopping');
-  console.log(`✅ Список со всеми выполненными пунктами завершен: ${completeCheck}`);
+  const freshShopping = await getListItems(list2.id, 'shopping');
+  if (freshShopping.length !== 0) {
+    throw new Error('Expected new list entity to start empty');
+  }
+  console.log('✅ Verified fresh list starts completely empty');
 
-  // Очистка тестовых данных
-  await clearAllCategoryItems(testChatId, 'shopping');
-  await clearAllCategoryItems(testChatId, 'task');
-  console.log('✅ Тестовые данные очищены. Все тесты БД пройдены!\n');
+  // Cleanup test artifacts
+  await clearCategoryFromList(list2.id, 'shopping');
+  await clearCategoryFromList(list2.id, 'task');
+  await closeActiveList(testChatId);
+
+  console.log('✅ All database entity lifecycle tests passed successfully!\n');
 }
 
 run().catch((err) => {
-  console.error('❌ Ошибка теста БД:', err);
+  console.error('❌ Test failed with error:', err);
   process.exit(1);
 });

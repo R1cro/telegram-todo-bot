@@ -20,21 +20,21 @@ function getGenAiClient(): GoogleGenAI | null {
   return genAiClient;
 }
 
+// General vocabulary for shopping detection (groceries, produce, meats, drinks, household goods, units)
 const SHOPPING_WORDS = [
   'купить', 'взять', 'пакет', 'пакеты', 'кг', 'гр', 'грамм', 'шт', 'л', 'литр',
-  'банка', 'банки', 'бутылка', 'бутылки', 'хлеб', 'молоко', 'сыр', 'мясо', 'рыба',
-  'рыбу', 'яйца', 'яйцо', 'масло', 'овощи', 'фрукты', 'яблоки', 'яблоко', 'бананы',
-  'банан', 'чай', 'кофе', 'сахар', 'соль', 'вода', 'воду', 'мыло', 'бумага',
-  'бумагу', 'порошок', 'корм', 'колбаса', 'колбасу', 'сосиски', 'макароны', 'крупа',
-  'крупу', 'гречка', 'гречку', 'рис', 'шоколад', 'печенье', 'томаты', 'помидоры',
-  'помидор', 'огурцы', 'огурец', 'картошка', 'картофель', 'морковь', 'морковку',
-  'лук', 'чеснок', 'майонез', 'кетчуп', 'сметана', 'сметану', 'творог', 'кефир',
-  'йогурт', 'салфетки', 'шампунь', 'паста', 'пасту', 'лекарства', 'аптека',
-  'таблетки', 'вкусняшки', 'пицца', 'пиццу', 'сок', 'грудка', 'грудку', 'филе',
-  'курица', 'курицу', 'птица', 'индейка', 'индейку', 'говядина', 'свинина', 'фарш',
-  'шампиньоны', 'шампинены', 'грибы', 'фасоль', 'батон', 'батончик'
+  'банка', 'банки', 'бутылка', 'бутылки', 'хлеб', 'батон', 'молоко', 'сыр', 'мясо',
+  'рыба', 'рыбу', 'птица', 'курица', 'курицу', 'филе', 'фарш', 'яйца', 'яйцо',
+  'масло', 'овощи', 'фрукты', 'яблоки', 'яблоко', 'бананы', 'банан', 'томаты',
+  'помидоры', 'огурцы', 'картошка', 'картофель', 'морковь', 'лук', 'чеснок',
+  'чай', 'кофе', 'сахар', 'соль', 'вода', 'воду', 'мыло', 'бумага', 'бумагу',
+  'порошок', 'корм', 'колбаса', 'колбасу', 'сосиски', 'макароны', 'крупа', 'гречка',
+  'рис', 'шоколад', 'печенье', 'майонез', 'кетчуп', 'сметана', 'творог', 'кефир',
+  'йогурт', 'салфетки', 'шампунь', 'паста', 'лекарства', 'аптека', 'таблетки',
+  'сок', 'грибы', 'фасоль'
 ];
 
+// General vocabulary for task and chore detection (actions, calls, appointments, payments)
 const TASK_WORDS = [
   'сделать', 'позвонить', 'написать', 'отправить', 'оплатить', 'заехать', 'забрать',
   'встретить', 'помыть', 'убрать', 'починить', 'проверить', 'записаться', 'отнести',
@@ -55,13 +55,13 @@ const SHOPPING_PREFIX = /^(покупки|купить|шопинг|список
 const TASK_PREFIX = /^(дела|задачи|сделать|список\s+дел|напоминания|планы|напомни|напомнить)\s*[:\-]\s*/iu;
 
 /**
- * Локальный умный парсер без внешних вызовов
+ * Local heuristic parser operating without external network requests.
  */
 export function parseLocal(text: string, defaultCategory: Category): ParsedItem[] {
   let forcedCategory: Category | null = null;
   let cleanText = text.trim();
 
-  // Проверка префикса на всё сообщение
+  // Check for explicit message-level category prefix
   if (SHOPPING_PREFIX.test(cleanText)) {
     forcedCategory = 'shopping';
     cleanText = cleanText.replace(SHOPPING_PREFIX, '');
@@ -70,30 +70,30 @@ export function parseLocal(text: string, defaultCategory: Category): ParsedItem[
     cleanText = cleanText.replace(TASK_PREFIX, '');
   }
 
-  // Разбиваем на строки
+  // Split into lines
   const rawLines = cleanText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const items: ParsedItem[] = [];
 
   for (const line of rawLines) {
-    // Очищаем от маркеров списка: "- ", "* ", "1. ", "1) " и т.п.
+    // Strip bullet markers: "- ", "* ", "1. ", "1) ", etc.
     const strippedLine = line.replace(/^(\s*[-*•—+>]|\d+[\.\)]|\(\d+\)|\[\d+\])\s*/, '').trim();
     if (!strippedLine) continue;
 
-    // Разбиваем строку на пункты (по запятым, точке с запятой и союзам "и", "а также")
+    // Split line into multiple item fragments if delimiters exist
     const parts = splitLineIntoItems(strippedLine);
 
     for (const part of parts) {
       let itemText = part.replace(/^[-*•—+>]\s*/, '').trim();
       if (!itemText) continue;
 
-      // Убираем вводные слова вроде "купить ", "надо купить ", "сделать " для краткости
+      // Strip common leading action words for cleaner item names
       const normalized = itemText
         .replace(/^(надо\s+|нужно\s+)?(купить|взять|сделать)\s+/i, '')
         .trim();
 
       const finalText = normalized ? capitalize(normalized) : capitalize(itemText);
 
-      // Определение категории
+      // Determine category based on prefix, keywords, or fallback
       let category: Category;
       if (forcedCategory) {
         category = forcedCategory;
@@ -117,24 +117,23 @@ export function parseLocal(text: string, defaultCategory: Category): ParsedItem[
 }
 
 /**
- * AI-парсер с использованием Gemini API (структурированный вывод)
+ * AI-assisted parser using Google Gemini API structured output.
  */
 export async function parseWithGemini(text: string, defaultCategory: Category): Promise<ParsedItem[] | null> {
   const client = getGenAiClient();
   if (!client) return null;
 
   try {
-    const prompt = `Ты — умный ассистент для планирования задач и покупок.
-Твоя задача — извлечь из сообщения пользователя отдельные пункты для списка покупок (shopping) или списка дел/задач (task).
+    const prompt = `You are a smart planning assistant.
+Extract individual items from the user's message for either a shopping list ("shopping") or a task list ("task").
 
-Инструкции:
-1. Если пользователь пишет свободной речью (например: "Завтра надо заехать в автосервис, а в пятерочке захватить молоко и хлеб"), разбей это на четкие лаконичные пункты.
-2. shopping: покупки, товары, продукты, лекарства, вещи в магазине.
-3. task: дела, задачи, действия, звонки, встречи, поручения.
-4. Очищай текст от лишней воды и слов вежливости, делай названия пунктов емкими (например: "Молоко", "Заехать в автосервис").
-5. Категория по умолчанию (если неочевидно): "${defaultCategory}".
+Instructions:
+1. Extract concise, clean items without filler words.
+2. shopping: groceries, goods, pharmacy, store purchases.
+3. task: actions, calls, errands, chores, appointments.
+4. Default category if ambiguous: "${defaultCategory}".
 
-Сообщение пользователя:
+User message:
 """${text}"""`;
 
     const response = await client.models.generateContent({
@@ -147,18 +146,18 @@ export async function parseWithGemini(text: string, defaultCategory: Category): 
           properties: {
             items: {
               type: Type.ARRAY,
-              description: 'Список распознанных пунктов',
+              description: 'Extracted todo and shopping items',
               items: {
                 type: Type.OBJECT,
                 properties: {
                   text: {
                     type: Type.STRING,
-                    description: 'Лаконичный текст пункта',
+                    description: 'Clean concise item text',
                   },
                   category: {
                     type: Type.STRING,
                     enum: ['shopping', 'task'],
-                    description: 'shopping для покупок, task для дел',
+                    description: 'Target list category',
                   },
                 },
                 required: ['text', 'category'],
@@ -188,15 +187,15 @@ export async function parseWithGemini(text: string, defaultCategory: Category): 
 
     return null;
   } catch (error) {
-    console.error('Ошибка при обращении к Gemini API (переключаемся на локальный парсер):', error);
+    console.error('Error invoking Gemini API, falling back to local parser:', error);
     return null;
   }
 }
 
 /**
- * Гибридный парсер:
- * Если подключен Gemini и сообщение похоже на сложный живой текст/фразу, используется Gemini.
- * В остальных случаях или при ошибке/отсутствии ключа мгновенно отрабатывает локальный парсер.
+ * Hybrid message parser:
+ * Routes complex conversational speech to Gemini AI if configured,
+ * otherwise falls back to the deterministic local parser.
  */
 export async function parseMessage(
   text: string,
@@ -205,7 +204,7 @@ export async function parseMessage(
   const trimmed = text.trim();
   if (!trimmed) return [];
 
-  // Проверяем, стоит ли вызывать AI
+  // Check if text benefits from AI conversational parsing
   const isComplexText =
     trimmed.length > 25 &&
     (/\b(завтра|сегодня|послезавтра|нужно|надо|не забыть|хочу|планирую|потом|заодно|вместе с тем)\b/i.test(trimmed) ||
@@ -218,7 +217,6 @@ export async function parseMessage(
     }
   }
 
-  // Резервный локальный парсер
   return parseLocal(trimmed, defaultCategory);
 }
 
@@ -228,7 +226,7 @@ function capitalize(str: string): string {
 }
 
 function splitLineIntoItems(line: string): string[] {
-  // Разделяем по запятым и точке с запятой (если не ссылка)
+  // Split on commas or semicolons when not a URL
   const commaParts = !line.includes('http')
     ? line.split(/[,;]+/).map((p) => p.trim()).filter(Boolean)
     : [line];
@@ -236,7 +234,7 @@ function splitLineIntoItems(line: string): string[] {
   const result: string[] = [];
 
   for (const part of commaParts) {
-    // Разделяем по союзам " и ", " а также ", если это не единая фраза
+    // Split on natural conjunctions ("and", "as well as") if separating distinct items
     if (/\s+(?:и|а также)\s+/i.test(part) && !part.includes('http')) {
       const subParts = part.split(/\s+(?:и|а также)\s+/i).map((p) => p.trim()).filter(Boolean);
       if (subParts.length > 1 && subParts.every((sp) => sp.length >= 2)) {
@@ -249,4 +247,3 @@ function splitLineIntoItems(line: string): string[] {
 
   return result;
 }
-

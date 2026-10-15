@@ -21,9 +21,9 @@ export const config: AppConfig = {
 
 export function validateConfig(): void {
   if (!config.botToken) {
-    console.error('❌ ОШИБКА: Не указан токен Telegram бота!');
-    console.error('Пожалуйста, создайте файл .env и укажите в нем токен:');
+    console.error('❌ ERROR: Missing BOT_TOKEN!');
+    console.error('Please configure your .env file with your Telegram bot token:');
     console.error('BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ');
-    console.error('\nПолучить токен можно у официального бота @BotFather в Telegram: https://t.me/BotFather\n');
+    console.error('\nYou can create a bot and get a token from @BotFather on Telegram: https://t.me/BotFather\n');
   }
 }
