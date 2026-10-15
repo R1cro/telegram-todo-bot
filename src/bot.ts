@@ -70,13 +70,45 @@ bot.on('my_chat_member', async (ctx) => {
   }
 });
 
-// Enforce chat access restriction: operate exclusively in the authorized group
+// Enforce chat and user access restrictions
 bot.use(async (ctx, next) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return next();
 
-  // Allow updates in authorized group(s)
+  // Allow /myid for anyone in private chat to discover their Telegram ID
+  const text = ctx.message?.text?.trim() || '';
+  if (text.startsWith('/myid')) {
+    return next();
+  }
+
+  // Allow /audit for administrators in private chat
+  if (text.startsWith('/audit') && ctx.from && config.adminUserIds.includes(ctx.from.id)) {
+    return next();
+  }
+
+  // Check if group is authorized
   if (config.allowedChatIds.includes(chatId)) {
+    // If a user whitelist is configured, restrict actions to authorized users
+    if (config.allowedUserIds.length > 0) {
+      const fromId = ctx.from?.id;
+      const isAllowed = Boolean(
+        fromId && (config.allowedUserIds.includes(fromId) || config.adminUserIds.includes(fromId))
+      );
+
+      if (!isAllowed) {
+        if (ctx.callbackQuery) {
+          await ctx.answerCallbackQuery({
+            text: '⛔ У вас нет доступа к управлению этим ботом.',
+            show_alert: true,
+          });
+          return;
+        }
+
+        // In group chats, silently ignore messages from non-whitelisted users
+        return;
+      }
+    }
+
     return next();
   }
 
@@ -96,14 +128,6 @@ bot.use(async (ctx, next) => {
 
   // Handle private chat messages
   if (ctx.chat?.type === 'private') {
-    const text = ctx.message?.text?.trim() || '';
-    if (text.startsWith('/myid')) {
-      return next();
-    }
-    if (text.startsWith('/audit') && ctx.from && config.adminUserIds.includes(ctx.from.id)) {
-      return next();
-    }
-
     await ctx.reply('⛔ Этот бот работает исключительно в разрешённой группе.');
     return;
   }
@@ -113,7 +137,7 @@ bot.use(async (ctx, next) => {
 
 bot.command('myid', async (ctx) => {
   if (!ctx.from) return;
-  await ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`);
+  await ctx.reply(`Ваш Telegram ID: <code>${ctx.from.id}</code>`, { parse_mode: 'HTML' });
 });
 
 bot.command('audit', async (ctx) => {

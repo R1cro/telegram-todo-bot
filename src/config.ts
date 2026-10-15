@@ -9,6 +9,7 @@ export interface AppConfig {
   isAiEnabled: boolean;
   adminUserIds: number[];
   allowedChatIds: number[];
+  allowedUserIds: number[];
 }
 
 const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
@@ -16,6 +17,11 @@ const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ||
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const dbPath = process.env.DB_PATH || 'file:todo_bot.db';
 const adminUserIds = (process.env.ADMIN_USER_IDS || '')
+  .split(',')
+  .map((id) => Number(id.trim()))
+  .filter((id) => Number.isSafeInteger(id) && id > 0);
+
+const allowedUserIds = (process.env.ALLOWED_USER_IDS || '')
   .split(',')
   .map((id) => Number(id.trim()))
   .filter((id) => Number.isSafeInteger(id) && id > 0);
@@ -36,6 +42,7 @@ export const config: AppConfig = {
   isAiEnabled: Boolean(geminiApiKey && geminiApiKey.trim().length > 0),
   adminUserIds,
   allowedChatIds,
+  allowedUserIds,
 };
 
 export function validateConfig(): void {
