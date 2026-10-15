@@ -9,8 +9,10 @@ export interface ParsedItem {
 }
 
 export interface VoiceParseResult {
-  transcript: string;
+  success: boolean;
+  transcript?: string;
   items: ParsedItem[];
+  error?: string;
 }
 
 let genAiClient: GoogleGenAI | null = null;
@@ -205,9 +207,25 @@ export async function parseVoiceWithGemini(
   audioBase64: string,
   mimeType: string,
   defaultCategory: Category
-): Promise<VoiceParseResult | null> {
+): Promise<VoiceParseResult> {
   const client = getGenAiClient();
-  if (!client) return null;
+  if (!client) {
+    return {
+      success: false,
+      items: [],
+      error: 'Gemini client not initialized. GEMINI_API_KEY is missing.',
+    };
+  }
+
+  // Normalize MIME type to standard audio MIME types supported by Gemini
+  let cleanMime = (mimeType || 'audio/ogg').split(';')[0].trim().toLowerCase();
+  if (cleanMime.includes('ogg')) {
+    cleanMime = 'audio/ogg';
+  } else if (cleanMime.includes('mp3') || cleanMime.includes('mpeg')) {
+    cleanMime = 'audio/mp3';
+  } else if (cleanMime.includes('wav')) {
+    cleanMime = 'audio/wav';
+  }
 
   try {
     const prompt = `Listen to the attached voice message.
@@ -217,12 +235,11 @@ export async function parseVoiceWithGemini(
 4. Remove conversational filler words (e.g. "добавь пожалуйста", "надо не забыть").
 5. Default category if ambiguous: "${defaultCategory}".`;
 
-    const response = await client.models.generateContent({
-      model: config.geminiModel,
+    const requestPayload = {
       contents: [
         {
           inlineData: {
-            mimeType: mimeType || 'audio/ogg',
+            mimeType: cleanMime,
             data: audioBase64,
           },
         },
@@ -262,9 +279,33 @@ export async function parseVoiceWithGemini(
           required: ['transcript', 'items'],
         },
       },
-    });
+    };
 
-    if (!response.text) return null;
+    let response;
+    try {
+      response = await client.models.generateContent({
+        model: config.geminiModel,
+        ...requestPayload,
+      });
+    } catch (modelErr: any) {
+      if (String(modelErr?.message).includes('not found') && config.geminiModel !== 'gemini-1.5-flash') {
+        console.warn(`Model ${config.geminiModel} not found, retrying with gemini-1.5-flash...`);
+        response = await client.models.generateContent({
+          model: 'gemini-1.5-flash',
+          ...requestPayload,
+        });
+      } else {
+        throw modelErr;
+      }
+    }
+
+    if (!response.text) {
+      return {
+        success: false,
+        items: [],
+        error: 'Empty response text returned from Gemini API.',
+      };
+    }
 
     const data = JSON.parse(response.text) as {
       transcript?: string;
@@ -281,12 +322,17 @@ export async function parseVoiceWithGemini(
       }));
 
     return {
+      success: true,
       transcript,
       items,
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error invoking Gemini voice API:', error);
-    return null;
+    return {
+      success: false,
+      items: [],
+      error: error?.message || String(error),
+    };
   }
 }
 

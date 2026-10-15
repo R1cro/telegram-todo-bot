@@ -363,58 +363,83 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
   const chatId = ctx.chat.id;
   const isGroup = ctx.chat.type !== 'private';
 
+  // 1. Immediately confirm receipt so the user gets instant visual feedback
+  const statusMsg = await ctx.reply('🎙 <b>Голосовое сообщение получено!</b>\n⏳ <i>Подготовка к обработке...</i>', {
+    parse_mode: 'HTML',
+  });
+
   if (!config.isAiEnabled) {
-    if (!isGroup) {
-      await ctx.reply(
-        '🎙 <b>Голосовые сообщения требуют подключения Gemini AI.</b>\n\n' +
-        'Укажите <code>GEMINI_API_KEY</code> в файле <code>.env</code> для распознавания голоса.',
-        { parse_mode: 'HTML' }
-      );
-    }
+    await ctx.api.editMessageText(
+      chatId,
+      statusMsg.message_id,
+      '❌ <b>Gemini AI не подключен!</b>\n\n' +
+      'Для распознавания голоса требуется добавить <code>GEMINI_API_KEY</code> в файл <code>.env</code> на сервере и перезапустить бота.',
+      { parse_mode: 'HTML' }
+    );
     return;
   }
 
-  await ctx.replyWithChatAction('typing');
+  await ctx.replyWithChatAction('record_voice');
 
   try {
     const file = await ctx.api.getFile(voice.file_id);
     if (!file.file_path) {
-      await ctx.reply('Не удалось загрузить аудиофайл из Telegram.');
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        '❌ Не удалось получить путь к аудиофайлу от Telegram API.'
+      );
       return;
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
     const res = await fetch(fileUrl);
     if (!res.ok) {
-      throw new Error(`Failed to download voice file: ${res.statusText}`);
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        `❌ Ошибка скачивания аудиофайла: ${res.status} ${res.statusText}`
+      );
+      return;
     }
 
     const arrayBuffer = await res.arrayBuffer();
     const base64Audio = Buffer.from(arrayBuffer).toString('base64');
-    const mimeType = ('mime_type' in voice && voice.mime_type) ? voice.mime_type : 'audio/ogg';
+    const rawMime = ('mime_type' in voice && voice.mime_type) ? voice.mime_type : 'audio/ogg';
+
+    await ctx.api.editMessageText(
+      chatId,
+      statusMsg.message_id,
+      '🎙 <b>Аудио загружено!</b>\n⏳ <i>Gemini AI расшифровывает речь и извлекает задачи...</i>',
+      { parse_mode: 'HTML' }
+    );
 
     const chatDisplayName = isGroup ? (ctx.chat.title || 'Группа') : ctx.from?.first_name;
     const user = await getOrCreateUser(chatId, ctx.from?.username, chatDisplayName);
 
-    const voiceResult = await parseVoiceWithGemini(base64Audio, mimeType, user.active_category);
+    const voiceResult = await parseVoiceWithGemini(base64Audio, rawMime, user.active_category);
 
-    if (!voiceResult || voiceResult.items.length === 0) {
-      if (voiceResult?.transcript) {
-        await ctx.reply(
-          `🎙 <i>«${voiceResult.transcript}»</i>\n\nНе удалось выделить пункты покупок или дел из этого голосового сообщения.`,
-          { parse_mode: 'HTML' }
-        );
-      } else if (!isGroup) {
-        await ctx.reply('Не удалось распознать речь в голосовом сообщении. Попробуйте сказать четче.');
-      }
+    if (!voiceResult.success) {
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        `❌ <b>Ошибка Gemini AI:</b>\n<code>${voiceResult.error || 'Неизвестная ошибка'}</code>\n\nПроверьте правильность токена GEMINI_API_KEY и лимиты в Google AI Studio.`,
+        { parse_mode: 'HTML' }
+      );
       return;
     }
 
-    // Delete incoming voice message to keep chat history clean
-    try {
-      await ctx.deleteMessage();
-    } catch {
-      // Ignore permissions failure in groups
+    const transcript = voiceResult.transcript || '';
+
+    if (voiceResult.items.length === 0) {
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        `🎙 <b>Расшифровано:</b> «<i>${transcript || '(пусто)'}</i>»\n\n` +
+        `⚠️ В сообщении не удалось найти конкретных покупок или дел. Попробуйте сказать, например: <i>«Купить молоко, сыр и хлеб»</i>.`,
+        { parse_mode: 'HTML' }
+      );
+      return;
     }
 
     // Always append items to the currently active list entity
@@ -433,11 +458,28 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
     const tasksAdded = voiceResult.items.filter((i) => i.category === 'task');
     const primaryCategory = tasksAdded.length > shoppingAdded.length ? 'task' : 'shopping';
 
+    // Delete the temporary status message now that items are added
+    try {
+      await ctx.api.deleteMessage(chatId, statusMsg.message_id);
+    } catch {}
+
+    // Delete incoming voice message to keep chat history clean
+    try {
+      await ctx.deleteMessage();
+    } catch {}
+
     // Automatically delete old list card and send the fresh updated list at the bottom
     await sendOrUpdateList(ctx, primaryCategory);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error handling voice message:', error);
-    await ctx.reply('Произошла ошибка при обработке голосового сообщения.');
+    try {
+      await ctx.api.editMessageText(
+        chatId,
+        statusMsg.message_id,
+        `❌ <b>Ошибка при обработке голоса:</b>\n<code>${error?.message || error}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } catch {}
   }
 });
 
