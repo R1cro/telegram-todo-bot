@@ -1,4 +1,4 @@
-import { Bot, Context } from 'grammy';
+import { Bot, Context, InlineKeyboard } from 'grammy';
 import { config, validateConfig } from './config.js';
 import {
   initDatabase,
@@ -17,11 +17,23 @@ import {
   type TodoItem,
 } from './db.js';
 import { parseMessage } from './parser.js';
-import { buildListKeyboard, buildConfirmClearKeyboard } from './keyboards.js';
+import {
+  buildListKeyboard,
+  buildConfirmClearKeyboard,
+  buildConfirmFinishKeyboard,
+} from './keyboards.js';
 
 validateConfig();
 
 export const bot = new Bot(config.botToken);
+
+// Список чисто разговорных фраз для игнорирования в групповом чате (чтобы не реагировать на флуд)
+const CHAT_STOP_WORDS = /^(привет|хай|ку|здравствуйте|добрый день|как дела|ок|окей|ok|хорошо|ладно|понял|понятно|пон|спасибо|спс|спасиб|благодарю|да|нет|неа|ага|я дома|я скоро|я выехал|я на месте|пока|доброе утро|спокойной ночи|отлично|лол|кек|хаха|ха-ха|круто|класс|ясно|точно|согласен|плюс|минус|\?|!|\.|\+|-)$/iu;
+
+function isConversationalNoise(text: string): boolean {
+  const clean = text.trim().toLowerCase().replace(/[.,!?;:()«»"']+/g, '').trim();
+  return CHAT_STOP_WORDS.test(clean) || clean.length <= 1;
+}
 
 /**
  * Формирует текстовое сообщение со списком
@@ -138,6 +150,7 @@ bot.command('help', async (ctx) => {
 /shopping — открыть 🛒 Список покупок
 /tasks — открыть 📝 Список дел и задач
 /clear — удалить выполненные пункты
+/close — 🏁 закрыть и зафиксировать текущий список
 /export — экспортировать списки обычным текстом
 /stats — посмотреть статистику покупок и дел
 
@@ -235,6 +248,27 @@ bot.command('stats', async (ctx) => {
   await ctx.reply(statsText, { parse_mode: 'HTML' });
 });
 
+bot.command(['close', 'finish'], async (ctx) => {
+  const chatId = ctx.chat.id;
+  const user = await getOrCreateUser(chatId);
+  const category = user.active_category;
+  const stats = await getStats(chatId);
+
+  const total = category === 'shopping' ? stats.shoppingTotal : stats.taskTotal;
+  const done = category === 'shopping' ? stats.shoppingDone : stats.taskDone;
+
+  await clearAllCategoryItems(chatId, category);
+  await setLastListMessageId(chatId, null);
+
+  const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
+  await ctx.reply(
+    `🏁 <b>${title} закрыт!</b>\n\n` +
+    `Было пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
+    `💡 <i>Отправьте новое сообщение в чат, чтобы начать новый список.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
 // ---------------- ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ ---------------- //
 
 bot.on('message:text', async (ctx) => {
@@ -254,19 +288,11 @@ bot.on('message:text', async (ctx) => {
   // Проверяем, является ли сообщение ответом на сообщение бота
   const isReplyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
 
-  // В группе отсекаем обычные разговоры ("привет", "ок", "я скоро буду"),
-  // если это не явный список и не обращение к боту
+  // В группе отсекаем только явный разговорный флуд ("привет", "ок", "я скоро буду", и т.п.),
+  // если сообщение не адресовано напрямую боту
   if (isGroup && !isMentioned && !isReplyToBot) {
-    const hasListPrefix = /^(покупки|купить|шопинг|дела|задачи|сделать|список)\s*[:\-]/iu.test(rawText);
-    const hasMultipleLines = rawText.includes('\n');
-    const hasBulletsOrNumbers = /^(\s*[-*•—+>]|\d+[\.\)])/m.test(rawText);
-    const hasKeywords = /(купить|взять|надо|нужно|сделать|напомни|пакет|хлеб|молоко|сыр|мясо|яйца|овощи|фрукты)/iu.test(rawText);
-    const hasCommaList = rawText.includes(',') && rawText.split(',').length >= 2 && hasKeywords;
-
-    const isIntentionalList = hasListPrefix || (hasMultipleLines && hasBulletsOrNumbers) || hasCommaList || hasKeywords;
-
-    if (!isIntentionalList) {
-      return; // Игнорируем обычный чат в группе
+    if (isConversationalNoise(rawText)) {
+      return; // Игнорируем обычный диалог в группе
     }
   }
 
@@ -409,6 +435,50 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
+  // Запрос подтверждения закрытия списка: confirm_finish:<category>
+  if (data.startsWith('confirm_finish:')) {
+    const category = data.split(':')[1] as Category;
+    const catName = category === 'shopping' ? 'покупок' : 'дел';
+    await ctx.answerCallbackQuery();
+    await ctx.api.editMessageText(
+      chatId,
+      messageId,
+      `🏁 <b>Вы уверены, что хотите закрыть текущий список ${catName}?</b>\n\nСписок будет зафиксирован и закрыт, а следующее сообщение начнёт новый список.`,
+      {
+        parse_mode: 'HTML',
+        reply_markup: buildConfirmFinishKeyboard(category),
+      }
+    );
+    return;
+  }
+
+  // Подтверждение закрытия списка: do_finish:<category>
+  if (data.startsWith('do_finish:')) {
+    const category = data.split(':')[1] as Category;
+    const stats = await getStats(chatId);
+    const total = category === 'shopping' ? stats.shoppingTotal : stats.taskTotal;
+    const done = category === 'shopping' ? stats.shoppingDone : stats.taskDone;
+
+    await clearAllCategoryItems(chatId, category);
+    await setLastListMessageId(chatId, null);
+
+    await ctx.answerCallbackQuery({ text: 'Список закрыт! 🏁' });
+
+    const title = category === 'shopping' ? '🛒 Список покупок' : '📝 Список дел';
+    const closedText = `🏁 <b>${title} успешно закрыт!</b>\n\n` +
+      `Всего пунктов: <b>${total}</b> (выполнено: <b>${done}</b>)\n\n` +
+      `💡 <i>Отправьте новое сообщение с текстом, чтобы начать новый список!</i>`;
+
+    const closedKeyboard = new InlineKeyboard()
+      .text('➕ Начать новый список', `tab:${category}`);
+
+    await ctx.api.editMessageText(chatId, messageId, closedText, {
+      parse_mode: 'HTML',
+      reply_markup: closedKeyboard,
+    });
+    return;
+  }
+
   // Запрос подтверждения очистки: confirm_clear:<category>
   if (data.startsWith('confirm_clear:')) {
     const category = data.split(':')[1] as Category;
@@ -493,6 +563,7 @@ async function main() {
       { command: 'shopping', description: '🛒 Список покупок' },
       { command: 'tasks', description: '📝 Список дел' },
       { command: 'clear', description: '🧹 Удалить выполненные' },
+      { command: 'close', description: '🏁 Закрыть список' },
       { command: 'export', description: '📋 Экспорт текстом' },
       { command: 'stats', description: '📊 Статистика' },
       { command: 'help', description: '📖 Справка и помощь' },

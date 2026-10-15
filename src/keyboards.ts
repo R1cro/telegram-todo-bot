@@ -52,16 +52,22 @@ export function buildListKeyboard(
   }
 
   // 3. Панель действий
-  const hasDoneItems = items.some((i) => i.is_done);
-  if (hasDoneItems) {
-    keyboard.text('🧹 Удалить выполненные', `clear_done:${category}`).row();
-  }
-
   if (items.length > 0) {
     keyboard
+      .text('🏁 Закрыть список', `confirm_finish:${category}`)
       .text('📋 Текстом', `export:${category}`)
-      .text('🗑 Очистить всё', `confirm_clear:${category}`)
       .row();
+  }
+
+  const hasDoneItems = items.some((i) => i.is_done);
+  if (hasDoneItems) {
+    keyboard.text('🧹 Удалить выполненные', `clear_done:${category}`);
+  }
+  if (items.length > 0) {
+    keyboard.text('🗑 Очистить всё', `confirm_clear:${category}`);
+  }
+  if (hasDoneItems || items.length > 0) {
+    keyboard.row();
   }
 
   keyboard.text('🔄 Обновить', `refresh:${category}`);
@@ -75,5 +81,14 @@ export function buildListKeyboard(
 export function buildConfirmClearKeyboard(category: Category): InlineKeyboard {
   return new InlineKeyboard()
     .text('⚠️ Да, очистить', `do_clear:${category}`)
+    .text('❌ Отмена', `tab:${category}`);
+}
+
+/**
+ * Клавиатура подтверждения закрытия списка
+ */
+export function buildConfirmFinishKeyboard(category: Category): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('🏁 Да, закрыть список', `do_finish:${category}`)
     .text('❌ Отмена', `tab:${category}`);
 }

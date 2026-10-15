@@ -44,6 +44,12 @@ const testCases = [
     expectedCount: 3, // по запятой и союзу "и" с раздельными категориями
     description: 'Смешанные покупки и задачи в одном предложении',
   },
+  {
+    input: 'Грудка филе',
+    defaultCat: 'shopping' as const,
+    expectedCount: 1,
+    description: 'Одиночный пункт из нескольких слов (Грудка филе)',
+  },
 ];
 
 let passed = 0;
