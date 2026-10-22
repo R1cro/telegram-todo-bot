@@ -240,7 +240,7 @@ export async function scanReceiptWithGemini(
 
 Если на фотографии не чек или данные совершенно не различимы, верни total_amount: 0 и пустой массив items.`;
 
-  const requestPayload = {
+  const requestPayloadWithSchema = {
     contents: [
       {
         inlineData: {
@@ -259,10 +259,12 @@ export async function scanReceiptWithGemini(
         properties: {
           store_name: {
             type: Type.STRING,
+            nullable: true,
             description: 'Name of the store or merchant, e.g. Пятёрочка, ВкусВилл',
           },
           receipt_date: {
             type: Type.STRING,
+            nullable: true,
             description: 'Date/time of purchase in ISO or YYYY-MM-DD format',
           },
           total_amount: {
@@ -281,14 +283,17 @@ export async function scanReceiptWithGemini(
                 },
                 category: {
                   type: Type.STRING,
+                  nullable: true,
                   description: 'Category of product',
                 },
                 quantity: {
                   type: Type.NUMBER,
+                  nullable: true,
                   description: 'Quantity count or weight',
                 },
                 unit_price: {
                   type: Type.NUMBER,
+                  nullable: true,
                   description: 'Price per single unit or kg',
                 },
                 total_price: {
@@ -305,14 +310,29 @@ export async function scanReceiptWithGemini(
     },
   };
 
+  const requestPayloadPlainJson = {
+    contents: [
+      {
+        inlineData: {
+          mimeType: mimeType || 'image/jpeg',
+          data: imageBase64,
+        },
+      },
+      {
+        text: prompt + '\nОтветь СТРОГО в формате валидного JSON объекта: {"store_name": "...", "receipt_date": "...", "total_amount": 1234.5, "items": [{"name": "...", "category": "...", "quantity": 1, "unit_price": 100, "total_price": 100}]}',
+      },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+    },
+  };
+
   const candidateModels = Array.from(
     new Set([
       config.geminiModel,
       'gemini-3.8-flash',
       'gemini-3.5-flash',
       'gemini-2.5-flash',
-      'gemini-1.5-flash',
-      'gemini-2.0-flash',
     ].filter(Boolean))
   );
 
@@ -321,26 +341,27 @@ export async function scanReceiptWithGemini(
   for (let modelIdx = 0; modelIdx < candidateModels.length; modelIdx++) {
     const model = candidateModels[modelIdx];
 
-    for (let attempt = 0; attempt <= 1; attempt++) {
-      try {
-        if (onProgress) {
-          if (attempt === 0 && modelIdx === 0) {
-            await onProgress(`🧾 <b>Чек загружен!</b>\n⏳ <i>Gemini AI (${model}) распознаёт товары и цены...</i>`);
-          } else if (attempt > 0) {
-            await onProgress(`🔄 <b>Повторная попытка (${attempt + 1}/2)</b>\n⏳ <i>Отправка запроса к ${model}...</i>`);
-          }
-        }
+    if (onProgress) {
+      if (modelIdx === 0) {
+        await onProgress(`🔍 <b>Gemini AI (${model}) анализирует чек...</b>\n⏳ <i>Извлекаю позиции, количество и суммы...</i>`);
+      } else {
+        await onProgress(`🔄 <i>Переключаюсь на модель ${model}...</i>\n⏳ <i>Повторный опрос нейросети...</i>`);
+      }
+    }
 
+    // Try first with JSON schema; if that errors with schema validation, try plain JSON
+    for (const payload of [requestPayloadWithSchema, requestPayloadPlainJson]) {
+      try {
         const callPromise = client.models.generateContent({
           model,
-          ...requestPayload,
+          ...payload,
         });
 
         let timerId: NodeJS.Timeout;
-        const timeoutMs = 25000;
+        const timeoutMs = 18000;
         const timeoutPromise = new Promise((_, reject) => {
           timerId = setTimeout(
-            () => reject(new Error(`Timeout: Gemini request for ${model} took longer than 25s`)),
+            () => reject(new Error(`Timeout: Gemini request for ${model} took longer than 18s`)),
             timeoutMs
           );
         });
@@ -392,7 +413,7 @@ export async function scanReceiptWithGemini(
           return {
             success: false,
             items: [],
-            error: 'На фото не удалось распознать кассовый чек или позиции товаров. Попробуйте сфотографировать ближе и при лучшем освещении.',
+            error: 'На фото не удалось распознать кассовый чек или позиции товаров. Попробуйте сфотографировать чек ближе и при хорошем освещении.',
           };
         }
 
@@ -415,21 +436,7 @@ export async function scanReceiptWithGemini(
         };
       } catch (err: any) {
         lastError = err;
-        const msg = String(err?.message || '');
-        const isModelUnavailable =
-          msg.includes('not found') ||
-          msg.includes('no longer available') ||
-          msg.includes('404');
-
-        if (isModelUnavailable) {
-          const nextModel = candidateModels[modelIdx + 1];
-          if (nextModel && onProgress) {
-            await onProgress(`🔄 <i>Модель ${model} недоступна. Переключаюсь на ${nextModel}...</i>`);
-          }
-          break;
-        }
-
-        await new Promise((r) => setTimeout(r, 1000));
+        console.warn(`Gemini attempt failed for model ${model}:`, err?.message || err);
       }
     }
   }

@@ -5,6 +5,8 @@ import {
   getProductPopularity,
   getRecentReceipts,
   type PeriodFilter,
+  type Receipt,
+  type TodoItem,
 } from './db.js';
 
 export type ExpensesTab = 'overview' | 'categories' | 'products' | 'users' | 'receipts';
@@ -206,5 +208,84 @@ export async function renderExpensesDashboard(
   }
 
   text += `💡 <i>Переключайте период (7, 14, 30 дней) и разделы кнопками ниже 👇</i>`;
+  return text.trim();
+}
+
+/**
+ * Renders the detailed digital card for a specific saved receipt.
+ */
+export function renderReceiptCard(
+  receipt: Receipt,
+  matchedItems: TodoItem[] = [],
+  isGroup: boolean = false
+): string {
+  const dateFormatted = new Date(receipt.receipt_date).toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const storeHeader = receipt.store_name ? ` «<b>${receipt.store_name}</b>»` : '';
+
+  let card = `🧾 <b>Чек #${receipt.id} сохранён в базу!</b>\n\n`;
+  card += `🏪 <b>Магазин:</b>${storeHeader}\n`;
+  card += `📅 <b>Дата:</b> ${dateFormatted}\n`;
+  card += `💰 <b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
+  card += `🛍 <b>Всего позиций:</b> <b>${receipt.items_count}</b>\n`;
+  if (isGroup && receipt.user_name) {
+    card += `👤 <b>Оплатил(а):</b> ${receipt.user_name}\n`;
+  }
+  card += `\n`;
+
+  card += `📋 <b>Распознанные товары и цены:</b>\n`;
+  const items = receipt.items || [];
+  if (items.length > 0) {
+    items.forEach((it, idx) => {
+      const num = idx + 1;
+      const qtyStr = it.quantity && it.quantity !== 1 ? ` (${it.quantity} шт.)` : '';
+      const unitPriceStr = it.unit_price && it.quantity > 1 ? ` [по ${formatMoney(it.unit_price)}]` : '';
+      card += `<b>${num}. ${it.name}</b>${qtyStr}\n`;
+      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <i>${it.category}</i>\n`;
+    });
+  } else {
+    card += `<i>Позиции сохранены в базе чеков.</i>\n`;
+  }
+
+  if (matchedItems.length > 0) {
+    card += `\n✅ <b>Вычеркнуто из списка покупок (${matchedItems.length}):</b>\n`;
+    for (const m of matchedItems) {
+      card += `• <s>${m.text}</s>\n`;
+    }
+  }
+
+  card += `\n💾 <i>Данные внесены в ваш профиль и учтены в статистике трат (/expenses).</i>`;
+  return card.trim();
+}
+
+/**
+ * Renders a list of receipts for the /receipts command.
+ */
+export function renderReceiptsList(receipts: Receipt[], isGroup: boolean = false): string {
+  if (receipts.length === 0) {
+    return `🧾 <b>История чеков пуста.</b>\n\n` +
+      `📸 Чтобы внести чек в базу, просто пришлите его фотографию в этот чат!\n` +
+      `Бот распознает позиции, подсчитает итог и добавит в аналитику трат.`;
+  }
+
+  let text = `🧾 <b>Зарегистрированные чеки покупок:</b>\n\n`;
+  receipts.forEach((r, idx) => {
+    const num = idx + 1;
+    const dateFormatted = new Date(r.receipt_date).toLocaleDateString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    const storeStr = r.store_name ? ` «<b>${r.store_name}</b>»` : '';
+    const userStr = isGroup && r.user_name ? ` • 👤 ${r.user_name}` : '';
+
+    text += `<b>${num}. Чек #${r.id}</b>${storeStr} (${dateFormatted})\n`;
+    text += `   └ Сумма: <b>${formatMoney(r.total_amount)}</b> (товаров: ${r.items_count})${userStr}\n\n`;
+  });
+
+  text += `💡 <i>Нажмите кнопку с номером чека ниже для детального просмотра списка товаров или используйте команду <code>/receipt [номер]</code>.</i>`;
   return text.trim();
 }

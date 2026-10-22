@@ -24,6 +24,7 @@ import {
   recordBotGroupMembership,
   getBotAuditData,
   addReceipt,
+  getReceiptById,
   deleteReceipt,
   getRecentReceipts,
   markMatchingShoppingItemsDone,
@@ -33,7 +34,13 @@ import {
 } from './db.js';
 import { parseMessage, parseVoiceWithGemini, extractQuantity } from './parser.js';
 import { scanReceiptWithGemini } from './receipt-scanner.js';
-import { renderExpensesDashboard, formatMoney, type ExpensesTab } from './analytics.js';
+import {
+  renderExpensesDashboard,
+  formatMoney,
+  renderReceiptCard,
+  renderReceiptsList,
+  type ExpensesTab,
+} from './analytics.js';
 import {
   buildListKeyboard,
   buildNavigationKeyboard,
@@ -44,6 +51,8 @@ import {
   buildCancelEditKeyboard,
   buildExpensesKeyboard,
   buildReceiptCardKeyboard,
+  buildReceiptsListKeyboard,
+  buildReceiptDetailKeyboard,
 } from './keyboards.js';
 
 validateConfig();
@@ -625,6 +634,53 @@ bot.command(['expenses', 'spending', 'analytics', 'finance'], async (ctx) => {
   });
 });
 
+bot.command(['receipts', 'checks', 'cheques'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
+  const chatId = ctx.chat.id;
+  const isGroup = ctx.chat.type !== 'private';
+  const receipts = await getRecentReceipts(chatId, 10);
+  const text = renderReceiptsList(receipts, isGroup);
+  const keyboard = buildReceiptsListKeyboard(receipts);
+
+  await ctx.reply(text, {
+    parse_mode: 'HTML',
+    reply_markup: keyboard,
+  });
+});
+
+bot.command(['receipt', 'check'], async (ctx) => {
+  try { await ctx.deleteMessage(); } catch {}
+  const chatId = ctx.chat.id;
+  const isGroup = ctx.chat.type !== 'private';
+  const rawText = ctx.message?.text?.trim() || '';
+  const match = rawText.match(/^\/(?:receipt|check)\s+(\d+)$/i);
+
+  if (!match) {
+    const receipts = await getRecentReceipts(chatId, 10);
+    const text = renderReceiptsList(receipts, isGroup);
+    const keyboard = buildReceiptsListKeyboard(receipts);
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+    });
+    return;
+  }
+
+  const receiptId = Number(match[1]);
+  const receipt = await getReceiptById(receiptId);
+  if (!receipt || receipt.chat_id !== chatId) {
+    await ctx.reply(`❌ Чек #${receiptId} не найден в этом чате.`);
+    return;
+  }
+
+  const card = renderReceiptCard(receipt, [], isGroup);
+  const keyboard = buildReceiptDetailKeyboard(receipt.id);
+  await ctx.reply(card, {
+    parse_mode: 'HTML',
+    reply_markup: keyboard,
+  });
+});
+
 // ---------------- MESSAGE TEXT PROCESSING ---------------- //
 
 bot.on('message:text', async (ctx) => {
@@ -976,9 +1032,17 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     return;
   }
 
-  await ctx.replyWithChatAction('upload_photo');
+  ctx.replyWithChatAction('upload_photo').catch(() => {});
 
   try {
+    // 2. Download photo from Telegram API
+    await ctx.api.editMessageText(
+      chatId,
+      statusMsg.message_id,
+      '🧾 <b>Фотография чека принята!</b>\n⏳ <i>Скачиваю изображение из Telegram...</i>',
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
     const file = await ctx.api.getFile(fileId);
     if (!file.file_path) {
       await ctx.api.editMessageText(
@@ -990,7 +1054,7 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
-    const res = await fetch(fileUrl);
+    const res = await fetch(fileUrl, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) {
       await ctx.api.editMessageText(
         chatId,
@@ -1001,7 +1065,15 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     }
 
     const arrayBuffer = await res.arrayBuffer();
+    const sizeKb = Math.round(arrayBuffer.byteLength / 1024);
     const base64Image = Buffer.from(arrayBuffer).toString('base64');
+
+    await ctx.api.editMessageText(
+      chatId,
+      statusMsg.message_id,
+      `📥 <b>Изображение получено (${sizeKb} КБ)</b>\n⏳ <i>Отправляю в нейросеть Gemini AI...</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
 
     const onProgress = async (text: string) => {
       try {
@@ -1009,21 +1081,23 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       } catch {}
     };
 
-    // 2. Scan receipt with Gemini
+    // 3. Scan receipt with Gemini
     const scanResult = await scanReceiptWithGemini(base64Image, mimeType, onProgress);
 
     if (!scanResult.success || !scanResult.items || scanResult.items.length === 0) {
       await ctx.api.editMessageText(
         chatId,
         statusMsg.message_id,
-        `⚠️ <b>Не удалось обработать чек:</b>\n${scanResult.error || 'Товары не найдены на изображении.'}\n\n` +
-        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и без сильных бликов.</i>`,
+        `⚠️ <b>Не удалось распознать чек:</b>\n${scanResult.error || 'Товары не найдены на изображении.'}\n\n` +
+        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и при хорошем освещении.</i>`,
         { parse_mode: 'HTML' }
       );
       return;
     }
 
-    // 3. Save receipt and items to database
+    await onProgress('💾 <b>Чек распознан!</b>\n⏳ <i>Сохраняю данные в базу и сверяю покупки...</i>');
+
+    // 4. Save receipt and items to database
     const savedReceipt = await addReceipt(
       chatId,
       fromUser ? fromUser.id : 0,
@@ -1035,54 +1109,21 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       scanResult.rawText
     );
 
-    // 4. Auto-match bought items with active shopping list
+    // 5. Auto-match bought items with active shopping list
     const activeList = await getOrCreateActiveList(chatId);
     const boughtNames = scanResult.items.map((i) => i.name);
     const matchedShoppingItems = await markMatchingShoppingItemsDone(chatId, activeList.id, boughtNames);
 
-    // 5. Delete incoming user photo message to keep chat clean (if bot has permissions)
+    // 6. Delete incoming user photo message to keep chat clean (if bot has permissions)
     try {
       await ctx.deleteMessage();
     } catch {}
 
-    // 6. Format confirmation message card
-    const dateFormatted = new Date(savedReceipt.receipt_date).toLocaleDateString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
-    const storeHeader = savedReceipt.store_name ? ` «<b>${savedReceipt.store_name}</b>»` : '';
+    // 7. Render full itemized digital receipt card
+    const cardText = renderReceiptCard(savedReceipt, matchedShoppingItems, isGroup);
 
-    let cardText = `🧾 <b>Чек успешно распознан и внесён в расходы!</b>\n\n`;
-    cardText += `🏪 <b>Магазин:</b>${storeHeader}\n`;
-    cardText += `📅 <b>Дата:</b> ${dateFormatted}\n`;
-    cardText += `💰 <b>Итоговая сумма:</b> <code>${formatMoney(savedReceipt.total_amount)}</code>\n`;
-    cardText += `🛍 <b>Позиций в чеке:</b> <b>${savedReceipt.items_count}</b>\n`;
-    if (isGroup) {
-      cardText += `👤 <b>Оплатил(а):</b> ${userName}\n`;
-    }
-    cardText += `\n`;
-
-    // Preview up to 8 items
-    cardText += `📋 <b>Купленные товары:</b>\n`;
-    const previewItems = scanResult.items.slice(0, 8);
-    for (const it of previewItems) {
-      const qtyStr = it.quantity > 1 ? ` (${it.quantity} шт.)` : '';
-      cardText += `• ${it.name} — <b>${formatMoney(it.total_price)}</b>${qtyStr}\n`;
-    }
-    if (scanResult.items.length > 8) {
-      cardText += `<i>... и ещё ${scanResult.items.length - 8} позиций</i>\n`;
-    }
-
-    if (matchedShoppingItems.length > 0) {
-      cardText += `\n✅ <b>Отмечено в списке покупок (${matchedShoppingItems.length}):</b>\n`;
-      for (const m of matchedShoppingItems) {
-        cardText += `• <s>${m.text}</s>\n`;
-      }
-    }
-
-    // Replace status message with the receipt card
-    await ctx.api.editMessageText(chatId, statusMsg.message_id, cardText.trim(), {
+    // Replace status message with the completed receipt card
+    await ctx.api.editMessageText(chatId, statusMsg.message_id, cardText, {
       parse_mode: 'HTML',
       reply_markup: buildReceiptCardKeyboard(savedReceipt.id),
     });
@@ -1598,6 +1639,49 @@ bot.on('callback_query:data', async (ctx) => {
     return;
   }
 
+  // View single receipt detail: view_receipt:<id>[:period]
+  if (data.startsWith('view_receipt:')) {
+    const parts = data.split(':');
+    const receiptId = Number(parts[1]);
+    const period = (parts[2] as PeriodFilter) || '7d';
+    const isGroup = ctx.chat?.type !== 'private';
+
+    const receipt = await getReceiptById(receiptId);
+    if (!receipt || receipt.chat_id !== chatId) {
+      await ctx.answerCallbackQuery({ text: 'Чек не найден в этом чате' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    const card = renderReceiptCard(receipt, [], isGroup);
+    const keyboard = buildReceiptDetailKeyboard(receipt.id, period);
+
+    try {
+      await ctx.api.editMessageText(chatId, messageId, card, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch {}
+    return;
+  }
+
+  // View all receipts list: view_all_receipts
+  if (data === 'view_all_receipts') {
+    const isGroup = ctx.chat?.type !== 'private';
+    const receipts = await getRecentReceipts(chatId, 10);
+    const text = renderReceiptsList(receipts, isGroup);
+    const keyboard = buildReceiptsListKeyboard(receipts);
+
+    await ctx.answerCallbackQuery();
+    try {
+      await ctx.api.editMessageText(chatId, messageId, text, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } catch {}
+    return;
+  }
+
   await ctx.answerCallbackQuery();
 });
 
@@ -1624,6 +1708,7 @@ async function main() {
       { command: 'shopping', description: '🛒 Список покупок' },
       { command: 'tasks', description: '📝 Список дел' },
       { command: 'expenses', description: '📊 Траты и чеки (7, 14, 30 дн)' },
+      { command: 'receipts', description: '🧾 История чеков и товаров' },
       { command: 'clear', description: '🧹 Удалить выполненные' },
       { command: 'close', description: '🏁 Закрыть список' },
       { command: 'export', description: '📋 Экспорт текстом' },

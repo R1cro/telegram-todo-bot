@@ -1,5 +1,5 @@
 import { InlineKeyboard } from 'grammy';
-import type { Category, TodoItem, CategoryStats, PeriodFilter } from './db.js';
+import type { Category, TodoItem, CategoryStats, PeriodFilter, Receipt } from './db.js';
 import type { ExpensesTab } from './analytics.js';
 
 /**
@@ -282,17 +282,13 @@ export function buildExpensesKeyboard(
   }
   keyboard.row();
 
-  // If in receipts tab and receipts exist, show quick delete buttons
+  // If in receipts tab and receipts exist, show view details and delete buttons
   if (activeTab === 'receipts' && recentReceiptIds.length > 0) {
-    for (let i = 0; i < recentReceiptIds.length; i += 2) {
-      const id1 = recentReceiptIds[i];
-      const id2 = recentReceiptIds[i + 1];
-
-      keyboard.text({ text: `🗑 Чек #${id1}`, style: 'danger' }, `exp_del_receipt:${id1}:${activePeriod}`);
-      if (id2) {
-        keyboard.text({ text: `🗑 Чек #${id2}`, style: 'danger' }, `exp_del_receipt:${id2}:${activePeriod}`);
-      }
-      keyboard.row();
+    for (const id of recentReceiptIds) {
+      keyboard
+        .text(`👁 Чек #${id}`, `view_receipt:${id}:${activePeriod}`)
+        .text({ text: `🗑 Удалить #${id}`, style: 'danger' }, `exp_del_receipt:${id}:${activePeriod}`)
+        .row();
     }
   }
 
@@ -310,7 +306,44 @@ export function buildExpensesKeyboard(
 export function buildReceiptCardKeyboard(receiptId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text('📊 Дэшборд трат', 'exp_open:7d')
+    .text('🧾 Все чеки', 'view_all_receipts')
     .text('🛒 К списку', 'tab:shopping')
     .row()
     .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:7d`);
+}
+
+/**
+ * Builds inline keyboard for the /receipts list command.
+ */
+export function buildReceiptsListKeyboard(receipts: Receipt[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  for (let i = 0; i < receipts.length; i += 2) {
+    const r1 = receipts[i];
+    const r2 = receipts[i + 1];
+
+    keyboard.text(`👁 Чек #${r1.id}`, `view_receipt:${r1.id}`);
+    if (r2) {
+      keyboard.text(`👁 Чек #${r2.id}`, `view_receipt:${r2.id}`);
+    }
+    keyboard.row();
+  }
+
+  keyboard
+    .text('📊 Дэшборд трат', 'exp_open:7d')
+    .text('🛒 К списку', 'tab:shopping');
+
+  return keyboard;
+}
+
+/**
+ * Builds inline keyboard when inspecting a single receipt in detail.
+ */
+export function buildReceiptDetailKeyboard(receiptId: number, backPeriod: PeriodFilter = '7d'): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('◀️ Назад к чекам', `exp_tab:${backPeriod}:receipts`)
+    .text('📊 Дэшборд', `exp_open:${backPeriod}`)
+    .row()
+    .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:${backPeriod}`)
+    .text('🛒 К списку', 'tab:shopping');
 }
