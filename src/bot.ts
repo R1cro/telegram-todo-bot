@@ -477,13 +477,15 @@ bot.command('clear', async (ctx) => {
   await sendOrUpdateList(ctx, user.active_category);
 });
 
-bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
-  const chatId = ctx.chat.id;
-  const currentMsgId = ctx.message?.message_id;
-
-  // Immediately delete the /clean command message itself
-  try { await ctx.deleteMessage(); } catch {}
-
+/**
+ * Cleans previous messages and closed list cards up to the active shopping list card.
+ * Safe for use both from /clean command and from inline button callbacks.
+ */
+async function cleanChatHistory(
+  ctx: any,
+  chatId: number,
+  anchorMsgId?: number
+): Promise<void> {
   const activeList = await getOrCreateActiveList(chatId);
   const targetCardId = activeList.last_message_id;
   const targetNavId = activeList.nav_message_id;
@@ -495,13 +497,13 @@ bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
     await clearListMessageIds(chatId, oldCardIds);
   }
 
-  // 2. Generate a sweep range of messages before the current list card (up to 100 messages)
-  const anchorId = targetCardId || currentMsgId;
-  if (anchorId) {
+  // 2. Generate a sweep range of messages before the current list card or anchor (up to 100 messages)
+  const anchorId = Math.max(anchorMsgId || 0, targetCardId || 0, targetNavId || 0);
+  if (anchorId > 0) {
     const sweepRange: number[] = [];
     const sweepLimit = 100;
-    for (let id = anchorId - 1; id >= Math.max(1, anchorId - sweepLimit); id--) {
-      if (id !== targetCardId && id !== targetNavId) {
+    for (let id = anchorId; id >= Math.max(1, anchorId - sweepLimit); id--) {
+      if (id !== targetCardId && id !== targetNavId && id !== anchorMsgId) {
         sweepRange.push(id);
       }
     }
@@ -519,9 +521,19 @@ bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
       const notice = await ctx.reply('🧹 <i>История очищена до актуального списка.</i>', { parse_mode: 'HTML' });
       setTimeout(async () => {
         try { await ctx.api.deleteMessage(chatId, notice.message_id); } catch {}
-      }, 3000);
+      }, 2500);
     } catch {}
   }
+}
+
+bot.command(['clean', 'purge', 'sweep'], async (ctx) => {
+  const chatId = ctx.chat.id;
+  const currentMsgId = ctx.message?.message_id;
+
+  // Immediately delete the /clean command message itself
+  try { await ctx.deleteMessage(); } catch {}
+
+  await cleanChatHistory(ctx, chatId, currentMsgId);
 });
 
 bot.command(['close', 'finish'], async (ctx) => {
@@ -1009,19 +1021,113 @@ async function safeEditOrReply(
     return;
   } catch (err: any) {
     const errMsg = String(err?.message || '');
-    // If Telegram returned entity parse error or modify error, attempt plain text edit
+    if (errMsg.includes('message is not modified')) {
+      return;
+    }
+    // If Telegram returned entity parse error, attempt plain text edit
     try {
       const plainText = htmlText.replace(/<[^>]*>/g, '');
       await ctx.api.editMessageText(chatId, messageId, plainText, extra);
       return;
-    } catch {
-      // If editing failed completely, reply with a fresh message
+    } catch (editErr: any) {
+      const editErrMsg = String(editErr?.message || '');
+      if (editErrMsg.includes('message is not modified') || editErrMsg.includes('429') || editErrMsg.includes('Too Many Requests')) {
+        return;
+      }
+      // If editing failed completely (e.g. message was deleted), reply with a fresh message
       try {
         await ctx.reply(htmlText, { parse_mode: 'HTML', ...extra });
       } catch {
         const plainText = htmlText.replace(/<[^>]*>/g, '');
         await ctx.reply(plainText, extra);
       }
+    }
+  }
+}
+
+/**
+ * Tracks intermediate progress status messages during receipt scanning.
+ * Throttles rapid status updates (preventing Telegram 429 rate limits),
+ * prevents creating duplicate message bubbles, and ensures all intermediate
+ * messages are reliably cleaned up when scanning finishes.
+ */
+class StatusProgressTracker {
+  private lastEditTime = 0;
+  private currentText = '';
+  private pendingTimer: NodeJS.Timeout | null = null;
+  public statusMsgIds: number[] = [];
+
+  constructor(
+    private ctx: any,
+    private chatId: number,
+    initialMsgId: number,
+    initialText: string
+  ) {
+    this.statusMsgIds.push(initialMsgId);
+    this.currentText = initialText;
+    this.lastEditTime = Date.now();
+  }
+
+  get activeMsgId(): number {
+    return this.statusMsgIds[this.statusMsgIds.length - 1];
+  }
+
+  async update(text: string, force: boolean = false): Promise<void> {
+    if (text === this.currentText) return;
+    this.currentText = text;
+
+    const now = Date.now();
+    const elapsed = now - this.lastEditTime;
+    const minInterval = 850; // Telegram edit limit safe interval (~1 req/sec)
+
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+
+    if (force || elapsed >= minInterval) {
+      await this.applyEdit(text);
+    } else {
+      // Throttle rapid updates so Telegram doesn't reject with 429
+      this.pendingTimer = setTimeout(async () => {
+        await this.applyEdit(this.currentText);
+      }, minInterval - elapsed);
+    }
+  }
+
+  private async applyEdit(text: string): Promise<void> {
+    this.lastEditTime = Date.now();
+    try {
+      await this.ctx.api.editMessageText(this.chatId, this.activeMsgId, text, {
+        parse_mode: 'HTML',
+      });
+    } catch (err: any) {
+      const msg = String(err?.message || '');
+      if (msg.includes('message is not modified')) {
+        return;
+      }
+      if (msg.includes('429') || msg.includes('Too Many Requests')) {
+        return;
+      }
+      // If HTML parse failed, try plain text
+      try {
+        const plain = text.replace(/<[^>]*>/g, '');
+        await this.ctx.api.editMessageText(this.chatId, this.activeMsgId, plain);
+      } catch {
+        // Do not spawn duplicate messages!
+      }
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+    for (const id of this.statusMsgIds) {
+      try {
+        await this.ctx.api.deleteMessage(this.chatId, id);
+      } catch {}
     }
   }
 }
@@ -1055,18 +1161,19 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
   console.log(`[Receipt] Received photo/doc from user ${fromUser?.id} (${userName}) in chat ${chatId}`);
 
   // 1. Send immediate receipt status feedback
-  const statusMsg = await ctx.reply('🧾 <b>Фотография чека получена!</b>\n⏳ <i>Подготовка к обработке...</i>', {
+  const initialStatusText = '🧾 <b>Фотография чека получена!</b>\n⏳ <i>Подготовка к обработке...</i>';
+  const statusMsg = await ctx.reply(initialStatusText, {
     parse_mode: 'HTML',
     reply_markup: { remove_keyboard: true },
   });
 
+  const tracker = new StatusProgressTracker(ctx, chatId, statusMsg.message_id, initialStatusText);
+
   if (!config.isAiEnabled) {
-    await safeEditOrReply(
-      ctx,
-      chatId,
-      statusMsg.message_id,
+    await tracker.update(
       '❌ <b>Gemini AI не подключен!</b>\n\n' +
-      'Для сканирования чеков требуется добавить <code>GEMINI_API_KEY</code> в файл <code>.env</code> на сервере и перезапустить бота.'
+      'Для сканирования чеков требуется добавить <code>GEMINI_API_KEY</code> в файл <code>.env</code> на сервере и перезапустить бота.',
+      true
     );
     return;
   }
@@ -1075,33 +1182,18 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
   try {
     // 2. Download photo from Telegram API
-    await safeEditOrReply(
-      ctx,
-      chatId,
-      statusMsg.message_id,
-      '🧾 <b>Фотография чека принята!</b>\n⏳ <i>Скачиваю изображение из Telegram...</i>'
-    );
+    await tracker.update('🧾 <b>Фотография чека принята!</b>\n⏳ <i>Скачиваю изображение из Telegram...</i>');
 
     const file = await ctx.api.getFile(fileId);
     if (!file.file_path) {
-      await safeEditOrReply(
-        ctx,
-        chatId,
-        statusMsg.message_id,
-        '❌ Не удалось получить путь к изображению от Telegram API.'
-      );
+      await tracker.update('❌ Не удалось получить путь к изображению от Telegram API.', true);
       return;
     }
 
     const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
     const res = await fetch(fileUrl, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) {
-      await safeEditOrReply(
-        ctx,
-        chatId,
-        statusMsg.message_id,
-        `❌ Ошибка скачивания фото чека: ${res.status} ${res.statusText}`
-      );
+      await tracker.update(`❌ Ошибка скачивания фото чека: ${res.status} ${res.statusText}`, true);
       return;
     }
 
@@ -1111,15 +1203,10 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
     console.log(`[Receipt] Image downloaded (${sizeKb} KB). Passing to Gemini Vision...`);
 
-    await safeEditOrReply(
-      ctx,
-      chatId,
-      statusMsg.message_id,
-      `📥 <b>Изображение получено (${sizeKb} КБ)</b>\n⏳ <i>Отправляю в нейросеть Gemini AI...</i>`
-    );
+    await tracker.update(`📥 <b>Изображение получено (${sizeKb} КБ)</b>\n⏳ <i>Отправляю в нейросеть Gemini AI...</i>`);
 
     const onProgress = async (text: string) => {
-      await safeEditOrReply(ctx, chatId, statusMsg.message_id, text);
+      await tracker.update(text);
     };
 
     // 3. Scan receipt with Gemini
@@ -1128,17 +1215,15 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     if (!scanResult.success || !scanResult.items || scanResult.items.length === 0) {
       console.warn(`[Receipt] Scan failed or zero items: ${scanResult.error}`);
       const safeErr = escapeHtml(scanResult.error || 'Товары не найдены на изображении.');
-      await safeEditOrReply(
-        ctx,
-        chatId,
-        statusMsg.message_id,
+      await tracker.update(
         `⚠️ <b>Не удалось распознать чек:</b>\n${safeErr}\n\n` +
-        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и при хорошем освещении.</i>`
+        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и при хорошем освещении.</i>`,
+        true
       );
       return;
     }
 
-    await onProgress('💾 <b>Чек распознан!</b>\n⏳ <i>Сохраняю данные в базу и сверяю покупки...</i>');
+    await tracker.update('💾 <b>Чек распознан!</b>\n⏳ <i>Сохраняю данные в базу и сверяю покупки...</i>', true);
 
     // 4. Save receipt and items to database
     const savedReceipt = await addReceipt(
@@ -1159,19 +1244,10 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const boughtNames = scanResult.items.map((i) => i.name);
     const matchedShoppingItems = await markMatchingShoppingItemsDone(chatId, activeList.id, boughtNames);
 
-    // 6. Delete temporary status progress message
-    try {
-      await ctx.api.deleteMessage(chatId, statusMsg.message_id);
-    } catch {}
+    // 6. Update status to success before scheduled auto-cleanup
+    await tracker.update('✅ <b>Чек успешно обработан и сохранён!</b>\n⏳ <i>Очищаю временные статусы...</i>', true);
 
-    // 7. ONLY AFTER data is safely saved in DB, delete the incoming user photo message
-    try {
-      await ctx.deleteMessage();
-    } catch (e) {
-      console.warn('[Receipt] Could not delete user photo message (maybe missing admin delete permissions):', e);
-    }
-
-    // 8. Render full itemized digital receipt card and send as a fresh new message
+    // 7. Render full itemized digital receipt card and send as a fresh new message
     const cardText = renderReceiptCard(savedReceipt, matchedShoppingItems, isGroup);
 
     await ctx.reply(cardText, {
@@ -1185,12 +1261,26 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
         await sendOrUpdateList(ctx, 'shopping', activeList.last_message_id);
       } catch {}
     }
+
+    // 8. ONLY AFTER data is safely saved in DB and digital card is posted:
+    // Schedule automatic deletion of temporary progress messages and the user's uploaded photo after 2.5 seconds
+    setTimeout(async () => {
+      // Delete incoming user photo message
+      try {
+        await ctx.deleteMessage();
+      } catch (e) {
+        console.warn('[Receipt] Could not delete user photo message (maybe missing admin delete permissions):', e);
+      }
+      // Delete all intermediate status messages
+      await tracker.cleanup();
+    }, 2500);
+
   } catch (error: any) {
     console.error('[Receipt] Error handling receipt photo message:', error);
     const safeErr = escapeHtml(error?.message || String(error));
     const errorMsg = `❌ <b>Ошибка при обработке фото чека:</b>\n<code>${safeErr}</code>\n\n` +
       `💡 <i>Если ошибка повторяется, проверьте доступность Gemini AI и сетевое соединение.</i>`;
-    await safeEditOrReply(ctx, chatId, statusMsg.message_id, errorMsg);
+    await tracker.update(errorMsg, true);
   }
 });
 
@@ -1721,6 +1811,28 @@ bot.on('callback_query:data', async (ctx) => {
     await safeEditOrReply(ctx, chatId, messageId, text, {
       reply_markup: keyboard,
     });
+    return;
+  }
+
+  // Hide receipt card from chat: hide_receipt or hide_receipt:<id>
+  if (data.startsWith('hide_receipt')) {
+    await ctx.answerCallbackQuery({ text: 'Чек скрыт 🧹' });
+    try {
+      await ctx.deleteMessage();
+    } catch {}
+    return;
+  }
+
+  // Clean chat history up to active list: clean_chat
+  if (data === 'clean_chat') {
+    await ctx.answerCallbackQuery({ text: '🧹 Очищаю историю чата...' });
+    const activeList = await getOrCreateActiveList(chatId);
+    if (messageId !== activeList.last_message_id && messageId !== activeList.nav_message_id) {
+      try {
+        await ctx.deleteMessage();
+      } catch {}
+    }
+    await cleanChatHistory(ctx, chatId, messageId);
     return;
   }
 

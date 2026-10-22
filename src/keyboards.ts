@@ -309,7 +309,10 @@ export function buildReceiptCardKeyboard(receiptId: number): InlineKeyboard {
     .text('🧾 Все чеки', 'view_all_receipts')
     .text('🛒 К списку', 'tab:shopping')
     .row()
-    .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:7d`);
+    .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:7d`)
+    .text('🧹 Скрыть чек', `hide_receipt:${receiptId}`)
+    .row()
+    .text('🧹 Очистить чат до списка', 'clean_chat');
 }
 
 /**
@@ -331,7 +334,9 @@ export function buildReceiptsListKeyboard(receipts: Receipt[]): InlineKeyboard {
 
   keyboard
     .text('📊 Дэшборд трат', 'exp_open:7d')
-    .text('🛒 К списку', 'tab:shopping');
+    .text('🛒 К списку', 'tab:shopping')
+    .row()
+    .text('🧹 Очистить чат до списка', 'clean_chat');
 
   return keyboard;
 }
@@ -345,5 +350,7 @@ export function buildReceiptDetailKeyboard(receiptId: number, backPeriod: Period
     .text('📊 Дэшборд', `exp_open:${backPeriod}`)
     .row()
     .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:${backPeriod}`)
+    .text('🧹 Скрыть чек', `hide_receipt:${receiptId}`)
+    .row()
     .text('🛒 К списку', 'tab:shopping');
 }
