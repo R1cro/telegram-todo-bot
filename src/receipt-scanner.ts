@@ -15,20 +15,20 @@ export interface ScannedReceiptResult {
 export type ProgressCallback = (statusText: string) => Promise<void> | void;
 
 export const STANDARD_CATEGORIES = [
-  '🥛 Молочные продукты',
-  '🥩 Мясо, птица, рыба',
-  '🥦 Овощи и фрукты',
-  '🥖 Хлеб и выпечка',
-  '🧀 Бакалея и сыры',
-  '🥤 Напитки',
-  '🍫 Сладости и снеки',
-  '🧴 Бытовая химия и гигиена',
-  '💊 Аптека',
-  '📦 Прочее',
+  'Молочные продукты',
+  'Мясо, птица, рыба',
+  'Овощи и фрукты',
+  'Хлеб и выпечка',
+  'Бакалея и сыры',
+  'Напитки',
+  'Сладости и снеки',
+  'Бытовая химия и гигиена',
+  'Аптека',
+  'Прочее',
 ] as const;
 
 export function normalizeCategory(rawCat?: string): string {
-  if (!rawCat) return '📦 Прочее';
+  if (!rawCat) return 'Прочее';
   const c = rawCat.toLowerCase().trim();
 
   if (
@@ -43,7 +43,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('сырок') ||
     c.includes('dairy')
   ) {
-    return '🥛 Молочные продукты';
+    return 'Молочные продукты';
   }
   if (
     c.includes('мяс') ||
@@ -60,7 +60,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('meat') ||
     c.includes('fish')
   ) {
-    return '🥩 Мясо, птица, рыба';
+    return 'Мясо, птица, рыба';
   }
   if (
     c.includes('овощ') ||
@@ -82,7 +82,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('fruit') ||
     c.includes('vegetable')
   ) {
-    return '🥦 Овощи и фрукты';
+    return 'Овощи и фрукты';
   }
   if (
     c.includes('хлеб') ||
@@ -98,7 +98,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('bakery') ||
     c.includes('bread')
   ) {
-    return '🥖 Хлеб и выпечка';
+    return 'Хлеб и выпечка';
   }
   if (
     c.includes('сыр') ||
@@ -119,7 +119,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('соль') ||
     c.includes('сахар')
   ) {
-    return '🧀 Бакалея и сыры';
+    return 'Бакалея и сыры';
   }
   if (
     c.includes('напит') ||
@@ -134,7 +134,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('drink') ||
     c.includes('beverage')
   ) {
-    return '🥤 Напитки';
+    return 'Напитки';
   }
   if (
     c.includes('сладост') ||
@@ -153,7 +153,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('sweet') ||
     c.includes('candy')
   ) {
-    return '🍫 Сладости и снеки';
+    return 'Сладости и снеки';
   }
   if (
     c.includes('хим') ||
@@ -169,7 +169,7 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('cleaning') ||
     c.includes('hygiene')
   ) {
-    return '🧴 Бытовая химия и гигиена';
+    return 'Бытовая химия и гигиена';
   }
   if (
     c.includes('аптек') ||
@@ -182,17 +182,16 @@ export function normalizeCategory(rawCat?: string): string {
     c.includes('pharmacy') ||
     c.includes('med')
   ) {
-    return '💊 Аптека';
+    return 'Аптека';
   }
 
   for (const std of STANDARD_CATEGORIES) {
-    const rawNoEmoji = std.replace(/^[^\s]+\s*/, '');
-    if (std === rawCat || rawCat.includes(rawNoEmoji)) {
+    if (std.toLowerCase() === c || c.includes(std.toLowerCase())) {
       return std;
     }
   }
 
-  return '📦 Прочее';
+  return 'Прочее';
 }
 
 let genAiClient: GoogleGenAI | null = null;

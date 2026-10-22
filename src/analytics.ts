@@ -24,6 +24,15 @@ export function escapeHtml(text: string | null | undefined): string {
     .replace(/'/g, '&#039;');
 }
 
+/**
+ * Strips leading emoji/icons from category names so they can be rendered as clean text badges.
+ * e.g. "🍫 Сладости и снеки" -> "Сладости и снеки"
+ */
+export function cleanCategoryName(raw?: string | null): string {
+  if (!raw) return 'Прочее';
+  return raw.replace(/^[^\p{L}\p{N}]+\s*/u, '').trim() || 'Прочее';
+}
+
 export function parsePeriodDays(period: PeriodFilter): number {
   switch (period) {
     case '7d':
@@ -77,7 +86,8 @@ export async function renderExpensesDashboard(
 
     for (const cat of categories) {
       const bar = formatProgressBar(cat.percentage, 8);
-      text += `<b>${escapeHtml(cat.category)}</b>\n`;
+      const catClean = cleanCategoryName(cat.category);
+      text += `<b>${escapeHtml(catClean)}</b>\n`;
       text += `└ ${formatMoney(cat.totalSpent)}  [<code>${bar}</code>] <b>${cat.percentage}%</b> (поз: ${cat.itemsCount})\n\n`;
     }
 
@@ -105,9 +115,9 @@ export async function renderExpensesDashboard(
       const num = index + 1;
       const qtyStr = p.totalQuantity > 1 ? ` (кол-во: <b>${p.totalQuantity}</b>)` : '';
       const buyStr = p.buyCount > 1 ? ` • покупок: ${p.buyCount}` : '';
+      const catBadge = cleanCategoryName(p.category);
       text += `<b>${num}. ${escapeHtml(p.name)}</b>\n`;
-      text += `   └ <b>${formatMoney(p.totalSpent)}</b>${qtyStr}${buyStr}\n`;
-      text += `   └ <i>${escapeHtml(p.category)}</i>\n\n`;
+      text += `   └ <b>${formatMoney(p.totalSpent)}</b>${qtyStr}${buyStr} • <code>${escapeHtml(catBadge)}</code>\n\n`;
     });
 
     return text.trim();
@@ -192,7 +202,8 @@ export async function renderExpensesDashboard(
     const previewCats = categories.slice(0, 4);
     for (const c of previewCats) {
       const bar = formatProgressBar(c.percentage, 8);
-      text += `• ${escapeHtml(c.category)}: <b>${formatMoney(c.totalSpent)}</b> [<code>${bar}</code> ${c.percentage}%]\n`;
+      const catClean = cleanCategoryName(c.category);
+      text += `• ${escapeHtml(catClean)}: <b>${formatMoney(c.totalSpent)}</b> [<code>${bar}</code> ${c.percentage}%]\n`;
     }
     if (categories.length > 4) {
       text += `<i>... и ещё ${categories.length - 4} категорий (см. вкладку «🏷 Категории»)</i>\n`;
@@ -205,7 +216,8 @@ export async function renderExpensesDashboard(
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
     text += `🏆 <b>Топ покупок по сумме:</b>\n`;
     topProducts.forEach((p, idx) => {
-      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — ${formatMoney(p.totalSpent)} (${p.totalQuantity} шт.)\n`;
+      const catBadge = cleanCategoryName(p.category);
+      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — ${formatMoney(p.totalSpent)} • <code>${escapeHtml(catBadge)}</code>\n`;
     });
     text += `\n`;
   }
@@ -226,6 +238,7 @@ export async function renderExpensesDashboard(
 
 /**
  * Renders the detailed digital card for a specific saved receipt.
+ * Clean layout without icons in the header summary and with monospace badge styling for categories.
  */
 export function renderReceiptCard(
   receipt: Receipt,
@@ -240,24 +253,25 @@ export function renderReceiptCard(
   const storeHeader = receipt.store_name ? ` «<b>${escapeHtml(receipt.store_name)}</b>»` : '';
 
   let card = `✅ <b>Чек успешно распознан и сохранён в базу!</b>\n\n`;
-  card += `🧾 <b>Чек #${receipt.id}</b>${storeHeader}\n`;
-  card += `📅 <b>Дата:</b> ${dateFormatted}\n`;
-  card += `💰 <b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
-  card += `🛍 <b>Всего позиций:</b> <b>${receipt.items_count}</b>\n`;
+  card += `<b>Чек #${receipt.id}</b>${storeHeader}\n`;
+  card += `<b>Дата:</b> ${dateFormatted}\n`;
+  card += `<b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
+  card += `<b>Всего позиций:</b> ${receipt.items_count}\n`;
   if (isGroup && receipt.user_name) {
-    card += `👤 <b>Оплатил(а):</b> ${escapeHtml(receipt.user_name)}\n`;
+    card += `<b>Оплатил(а):</b> ${escapeHtml(receipt.user_name)}\n`;
   }
   card += `\n`;
 
-  card += `📋 <b>Распознанные товары и цены:</b>\n`;
+  card += `<b>Распознанные товары и цены:</b>\n`;
   const items = receipt.items || [];
   if (items.length > 0) {
     items.forEach((it, idx) => {
       const num = idx + 1;
       const qtyStr = it.quantity && it.quantity !== 1 ? ` (${it.quantity} шт.)` : '';
       const unitPriceStr = it.unit_price && it.quantity > 1 ? ` [по ${formatMoney(it.unit_price)}]` : '';
+      const catBadge = cleanCategoryName(it.category);
       card += `<b>${num}. ${escapeHtml(it.name)}</b>${qtyStr}\n`;
-      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <i>${escapeHtml(it.category)}</i>\n`;
+      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <code>${escapeHtml(catBadge)}</code>\n`;
     });
   } else {
     card += `<i>Позиции сохранены в базе чеков.</i>\n`;
@@ -270,7 +284,7 @@ export function renderReceiptCard(
     }
   }
 
-  card += `\n💾 <i>Данные внесены в ваш профиль и учтены в статистике трат (/expenses, /receipts).</i>`;
+  card += `\n<i>Данные внесены в ваш профиль и учтены в статистике трат (/expenses, /receipts).</i>`;
   return card.trim();
 }
 
