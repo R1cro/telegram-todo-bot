@@ -281,9 +281,9 @@ export async function renderExpensesDashboard(
   ]);
 
   let text = `📊 <b>Дэшборд расходов (${periodLabel}):</b>\n\n`;
-  text += `💰 <b>Всего потрачено:</b> <b>${formatMoney(summary.totalAmount)}</b>\n`;
-  text += `🧾 <b>Чеков обработано:</b> <b>${summary.receiptsCount}</b>\n`;
-  text += `📈 <b>Средний чек:</b> <b>${formatMoney(summary.averageReceipt)}</b>\n`;
+  text += `💰 <b>Всего потрачено:</b> <b>${formatMoney(summary.totalAmount)}</b>\n\n`;
+  text += `🧾 <b>Чеков обработано:</b> <b>${summary.receiptsCount}</b>\n\n`;
+  text += `📈 <b>Средний чек:</b> <b>${formatMoney(summary.averageReceipt)}</b>\n\n`;
   text += `🛍 <b>Куплено товаров:</b> <b>${summary.itemsCount} шт.</b>\n\n`;
 
   if (summary.receiptsCount === 0) {
@@ -295,39 +295,36 @@ export async function renderExpensesDashboard(
 
   // Top categories preview
   if (categories.length > 0) {
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `🏷 <b>Основные категории трат:</b>\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    text += `🏷 <b>Основные категории трат:</b>\n\n`;
     const previewCats = categories.slice(0, 4);
     for (const c of previewCats) {
       const bar = formatProgressBar(c.percentage, 8);
       const catBadge = formatCategoryBadge(c.category);
-      text += `• ${catBadge}: <b>${formatMoney(c.totalSpent)}</b> [${bar} ${c.percentage}%]\n`;
+      text += `• ${catBadge}: <b>${formatMoney(c.totalSpent)}</b> [${bar} ${c.percentage}%]\n\n`;
     }
     if (categories.length > 4) {
-      text += `<i>... и ещё ${categories.length - 4} категорий (см. вкладку «🏷 Категории»)</i>\n`;
+      text += `<i>... и ещё ${categories.length - 4} категорий (см. вкладку «🏷 Категории»)</i>\n\n`;
     }
-    text += `\n`;
   }
 
   // Top products preview
   if (topProducts.length > 0) {
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `🏆 <b>Топ покупок по сумме:</b>\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    text += `🏆 <b>Топ покупок по сумме:</b>\n\n`;
     topProducts.forEach((p, idx) => {
       const catBadge = formatCategoryBadge(p.category);
-      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — <b>${formatMoney(p.totalSpent)}</b> • ${catBadge}\n`;
+      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — <b>${formatMoney(p.totalSpent)}</b> • ${catBadge}\n\n`;
     });
-    text += `\n`;
   }
 
   // Group members preview
   if (isGroup && users.length > 0) {
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `👥 <b>Вклад участников:</b>\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+    text += `👥 <b>Вклад участников:</b>\n\n`;
     for (const u of users) {
-      text += `• <b>${escapeHtml(u.user_name)}</b>: ${formatMoney(u.totalSpent)} (${u.percentage}%)\n`;
+      text += `• <b>${escapeHtml(u.user_name)}</b>: ${formatMoney(u.totalSpent)} (${u.percentage}%)\n\n`;
     }
-    text += `\n`;
   }
 
   text += `💡 <i>Переключайте период (7, 14, 30 дней) и разделы кнопками ниже 👇</i>`;
@@ -369,7 +366,7 @@ export function renderReceiptCard(
       const unitPriceStr = it.unit_price && it.quantity > 1 ? ` [по ${formatMoney(it.unit_price)}]` : '';
       const badge = formatCategoryBadge(it.category);
       card += `<b>${num}. ${escapeHtml(it.name)}</b>${qtyStr}\n`;
-      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • ${badge}\n`;
+      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • ${badge}\n\n`;
     });
   } else {
     card += `<i>Позиции сохранены в базе чеков.</i>\n`;
