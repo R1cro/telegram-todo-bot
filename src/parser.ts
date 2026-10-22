@@ -221,12 +221,15 @@ async function callGeminiWithRetry(
   const timeoutMs = options?.timeoutMs ?? 20000;
   const onProgress = options?.onProgress;
 
-  // Primary model first, followed by active fallback models (strictly 3.8 and 3.5 flash)
+  // Primary model first, followed by active fallback models (strictly Gemini 3 family)
   const candidateModels = Array.from(
     new Set([
       primaryModel,
       'gemini-3.8-flash',
+      'gemini-3.6-flash',
       'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
     ].filter(Boolean))
   ).filter((m) => !m.includes('2.0') && !m.includes('2.5') && !m.includes('1.5'));
 
@@ -270,6 +273,22 @@ async function callGeminiWithRetry(
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || '');
+
+        const isOverloaded =
+          msg.includes('503') ||
+          msg.includes('high demand') ||
+          msg.includes('UNAVAILABLE');
+
+        if (isOverloaded && candidateModels[modelIdx + 1]) {
+          const nextModel = candidateModels[modelIdx + 1];
+          console.warn(`[Parser] Model ${model} is overloaded (503), switching immediately to ${nextModel}...`);
+          if (onProgress) {
+            await onProgress(
+              `🔄 <i>Модель ${model} перегружена (503). Переключаюсь на ${nextModel}...</i>`
+            );
+          }
+          break;
+        }
 
         const isTransient =
           msg.includes('503') ||

@@ -331,7 +331,10 @@ export async function scanReceiptWithGemini(
     new Set([
       config.geminiModel,
       'gemini-3.8-flash',
+      'gemini-3.6-flash',
       'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
     ].filter(Boolean))
   ).filter((m) => !m.includes('2.0') && !m.includes('2.5') && !m.includes('1.5'));
 
@@ -442,14 +445,26 @@ export async function scanReceiptWithGemini(
         const errMsg = String(err?.message || '');
         console.warn(`[Receipt] Gemini attempt failed for model ${model}:`, errMsg);
 
-        if (
+        const isOverloaded =
+          errMsg.includes('503') ||
+          errMsg.includes('high demand') ||
+          errMsg.includes('UNAVAILABLE') ||
+          errMsg.includes('overloaded');
+
+        const isPermanentError =
           errMsg.includes('not found') ||
           errMsg.includes('404') ||
           errMsg.includes('no longer available') ||
           errMsg.includes('limiting access') ||
-          errMsg.includes('User location is not supported')
-        ) {
+          errMsg.includes('User location is not supported');
+
+        if (isOverloaded || isPermanentError) {
           modelUnavailable = true;
+          const nextModel = candidateModels[modelIdx + 1];
+          if (nextModel && onProgress) {
+            const reason = isOverloaded ? 'перегружена (503)' : 'недоступна';
+            await onProgress(`🔄 <i>Модель ${model} ${reason}. Переключаюсь на ${nextModel}...</i>`);
+          }
           break;
         }
       }
@@ -459,7 +474,13 @@ export async function scanReceiptWithGemini(
   console.error('[Receipt] Gemini receipt scanning failed across all models:', lastError);
 
   let userFriendlyError = lastError?.message || 'ошибка сервиса Gemini';
-  if (userFriendlyError.includes('User location is not supported')) {
+  if (
+    userFriendlyError.includes('503') ||
+    userFriendlyError.includes('high demand') ||
+    userFriendlyError.includes('UNAVAILABLE')
+  ) {
+    userFriendlyError = 'Серверы Google Gemini сейчас временно перегружены (ошибка 503: High demand). Бот автоматически опробовал модели линейки Gemini 3 (3.8, 3.6, 3.5), но серверы вернули перегрузку. Пожалуйста, повторите попытку через 1-2 минуты.';
+  } else if (userFriendlyError.includes('User location is not supported')) {
     userFriendlyError = 'Регион вашего IP-адреса не поддерживается Google Gemini API. Для работы требуется подключение через VPN/прокси.';
   } else if (userFriendlyError.includes('API_KEY_INVALID') || userFriendlyError.includes('API key not valid')) {
     userFriendlyError = 'Неверный GEMINI_API_KEY. Проверьте ключ в файле .env.';
