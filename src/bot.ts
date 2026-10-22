@@ -1159,16 +1159,23 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const boughtNames = scanResult.items.map((i) => i.name);
     const matchedShoppingItems = await markMatchingShoppingItemsDone(chatId, activeList.id, boughtNames);
 
-    // 6. Delete incoming user photo message to keep chat clean (if bot has permissions)
+    // 6. Delete temporary status progress message
     try {
-      await ctx.deleteMessage();
+      await ctx.api.deleteMessage(chatId, statusMsg.message_id);
     } catch {}
 
-    // 7. Render full itemized digital receipt card
+    // 7. ONLY AFTER data is safely saved in DB, delete the incoming user photo message
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      console.warn('[Receipt] Could not delete user photo message (maybe missing admin delete permissions):', e);
+    }
+
+    // 8. Render full itemized digital receipt card and send as a fresh new message
     const cardText = renderReceiptCard(savedReceipt, matchedShoppingItems, isGroup);
 
-    // Replace status message with the completed receipt card
-    await safeEditOrReply(ctx, chatId, statusMsg.message_id, cardText, {
+    await ctx.reply(cardText, {
+      parse_mode: 'HTML',
       reply_markup: buildReceiptCardKeyboard(savedReceipt.id),
     });
 

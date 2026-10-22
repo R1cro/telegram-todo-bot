@@ -14,7 +14,11 @@ export interface AppConfig {
 
 const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+let configuredModel = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+if (configuredModel.includes('2.0') || configuredModel.includes('2.5')) {
+  configuredModel = 'gemini-3.8-flash';
+}
+const geminiModel = configuredModel;
 const dbPath = process.env.DB_PATH || 'file:todo_bot.db';
 const adminUserIds = (process.env.ADMIN_USER_IDS || '')
   .split(',')

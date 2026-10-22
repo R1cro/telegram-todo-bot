@@ -330,11 +330,10 @@ export async function scanReceiptWithGemini(
   const candidateModels = Array.from(
     new Set([
       config.geminiModel,
-      'gemini-2.0-flash',
-      'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash',
     ].filter(Boolean))
-  );
+  ).filter((m) => !m.includes('2.0') && !m.includes('2.5') && !m.includes('1.5'));
 
   let lastError: any = null;
 

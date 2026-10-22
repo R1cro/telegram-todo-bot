@@ -239,8 +239,8 @@ export function renderReceiptCard(
   });
   const storeHeader = receipt.store_name ? ` «<b>${escapeHtml(receipt.store_name)}</b>»` : '';
 
-  let card = `🧾 <b>Чек #${receipt.id} сохранён в базу!</b>\n\n`;
-  card += `🏪 <b>Магазин:</b>${storeHeader}\n`;
+  let card = `✅ <b>Чек успешно распознан и сохранён в базу!</b>\n\n`;
+  card += `🧾 <b>Чек #${receipt.id}</b>${storeHeader}\n`;
   card += `📅 <b>Дата:</b> ${dateFormatted}\n`;
   card += `💰 <b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
   card += `🛍 <b>Всего позиций:</b> <b>${receipt.items_count}</b>\n`;
