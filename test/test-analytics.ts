@@ -136,6 +136,26 @@ async function runAnalyticsTests() {
     throw new Error('Expected 1 receipt left after deletion');
   }
 
+  // 11. Test formatCategoryBadge and renderReceiptCard formatting
+  const { formatCategoryBadge, renderReceiptCard } = await import('../src/analytics.js');
+  const badgeSweets = formatCategoryBadge('Сладости и снеки');
+  const badgeProduce = formatCategoryBadge('Овощи и фрукты');
+  const badgeDairy = formatCategoryBadge('Молочные продукты');
+  const badgeBakery = formatCategoryBadge('Хлеб и выпечка');
+  const badgeMeat = formatCategoryBadge('Мясо, птица, рыба');
+
+  if (badgeSweets !== '🟠 [Сладости и снеки]') throw new Error(`Unexpected badgeSweets: ${badgeSweets}`);
+  if (badgeProduce !== '🟢 [Овощи и фрукты]') throw new Error(`Unexpected badgeProduce: ${badgeProduce}`);
+  if (badgeDairy !== '🟣 [Молочные продукты]') throw new Error(`Unexpected badgeDairy: ${badgeDairy}`);
+  if (badgeBakery !== '🟡 [Хлеб и выпечка]') throw new Error(`Unexpected badgeBakery: ${badgeBakery}`);
+  if (badgeMeat !== '🔴 [Мясо, птица, рыба]') throw new Error(`Unexpected badgeMeat: ${badgeMeat}`);
+
+  const renderedCard = renderReceiptCard(receipt1);
+  if (renderedCard.includes('<code>')) {
+    throw new Error(`Receipt card contains unexpected <code> tag (which causes tap-to-copy button):\n${renderedCard}`);
+  }
+  console.log(`✅ Verified category badges and confirmed NO <code> tags in receipt card:\n   ${badgeSweets}, ${badgeProduce}, ${badgeDairy}`);
+
   console.log('\n🎉 All receipt analytics & database tests passed successfully!');
 }
 

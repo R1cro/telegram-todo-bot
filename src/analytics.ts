@@ -33,6 +33,104 @@ export function cleanCategoryName(raw?: string | null): string {
   return raw.replace(/^[^\p{L}\p{N}]+\s*/u, '').trim() || 'Прочее';
 }
 
+/**
+ * Maps a category name to a clean, distinct colored circle marker badge.
+ * Provides visual color categorization without requiring Telegram code blocks (which act as copy buttons).
+ */
+export function getCategoryColorMarker(rawCat?: string | null): string {
+  const clean = cleanCategoryName(rawCat).toLowerCase();
+
+  if (clean.includes('овощ') || clean.includes('фрукт') || clean.includes('ягод') || clean.includes('зелен')) {
+    return '🟢';
+  }
+  if (
+    clean.includes('молоч') ||
+    clean.includes('творог') ||
+    clean.includes('йогурт') ||
+    clean.includes('кефир') ||
+    clean.includes('масло слив') ||
+    clean.includes('сырок') ||
+    clean.includes('сметан')
+  ) {
+    return '🟣';
+  }
+  if (
+    clean.includes('мяс') ||
+    clean.includes('птиц') ||
+    clean.includes('рыб') ||
+    clean.includes('колбас') ||
+    clean.includes('сосиск') ||
+    clean.includes('индейк') ||
+    clean.includes('говядин') ||
+    clean.includes('фарш')
+  ) {
+    return '🔴';
+  }
+  if (
+    clean.includes('хлеб') ||
+    clean.includes('выпечк') ||
+    clean.includes('булоч') ||
+    clean.includes('круассан') ||
+    clean.includes('пирог') ||
+    clean.includes('тост') ||
+    clean.includes('батон')
+  ) {
+    return '🟡';
+  }
+  if (
+    clean.includes('сладост') ||
+    clean.includes('снек') ||
+    clean.includes('шоколад') ||
+    clean.includes('конфет') ||
+    clean.includes('торт') ||
+    clean.includes('десерт') ||
+    clean.includes('чипс') ||
+    clean.includes('вафл') ||
+    clean.includes('печень')
+  ) {
+    return '🟠';
+  }
+  if (
+    clean.includes('бакале') ||
+    clean.includes('сыр') ||
+    clean.includes('круп') ||
+    clean.includes('макарон') ||
+    clean.includes('консерв') ||
+    clean.includes('рис') ||
+    clean.includes('гречк')
+  ) {
+    return '🟤';
+  }
+  if (
+    clean.includes('напит') ||
+    clean.includes('сок') ||
+    clean.includes('вод') ||
+    clean.includes('чай') ||
+    clean.includes('кофе') ||
+    clean.includes('пиво') ||
+    clean.includes('морс')
+  ) {
+    return '🔵';
+  }
+  if (clean.includes('хим') || clean.includes('гигиен') || clean.includes('мыл') || clean.includes('бытов')) {
+    return '🔘';
+  }
+  if (clean.includes('аптек') || clean.includes('лекарств')) {
+    return '🔴';
+  }
+  return '⚪';
+}
+
+/**
+ * Formats category as a clean colored badge in brackets, e.g. "🟠 [Сладости и снеки]".
+ * Visually distinguishes categories with real color while avoiding Telegram's copy-to-clipboard code tag.
+ */
+export function formatCategoryBadge(rawCat?: string | null): string {
+  const clean = cleanCategoryName(rawCat);
+  const marker = getCategoryColorMarker(clean);
+  return `${marker} [${escapeHtml(clean)}]`;
+}
+
 export function parsePeriodDays(period: PeriodFilter): number {
   switch (period) {
     case '7d':
@@ -86,9 +184,9 @@ export async function renderExpensesDashboard(
 
     for (const cat of categories) {
       const bar = formatProgressBar(cat.percentage, 8);
-      const catClean = cleanCategoryName(cat.category);
-      text += `<b>${escapeHtml(catClean)}</b>\n`;
-      text += `└ ${formatMoney(cat.totalSpent)}  [<code>${bar}</code>] <b>${cat.percentage}%</b> (поз: ${cat.itemsCount})\n\n`;
+      const catBadge = formatCategoryBadge(cat.category);
+      text += `<b>${catBadge}</b>\n`;
+      text += `└ <b>${formatMoney(cat.totalSpent)}</b>  [${bar}] <b>${cat.percentage}%</b> (поз: ${cat.itemsCount})\n\n`;
     }
 
     return text.trim();
@@ -101,7 +199,7 @@ export async function renderExpensesDashboard(
     ]);
 
     let text = `🏆 <b>Топ товаров и расходов за ${periodLabel}:</b>\n\n`;
-    text += `💰 <b>Сумма покупок:</b> ${formatMoney(summary.totalAmount)}\n\n`;
+    text += `💰 <b>Сумма покупок:</b> <b>${formatMoney(summary.totalAmount)}</b>\n\n`;
 
     if (popularity.length === 0) {
       text += `<i>За выбранный период товары ещё не зарегистрированы.</i>\n\n` +
@@ -115,9 +213,9 @@ export async function renderExpensesDashboard(
       const num = index + 1;
       const qtyStr = p.totalQuantity > 1 ? ` (кол-во: <b>${p.totalQuantity}</b>)` : '';
       const buyStr = p.buyCount > 1 ? ` • покупок: ${p.buyCount}` : '';
-      const catBadge = cleanCategoryName(p.category);
+      const catBadge = formatCategoryBadge(p.category);
       text += `<b>${num}. ${escapeHtml(p.name)}</b>\n`;
-      text += `   └ <b>${formatMoney(p.totalSpent)}</b>${qtyStr}${buyStr} • <code>${escapeHtml(catBadge)}</code>\n\n`;
+      text += `   └ <b>${formatMoney(p.totalSpent)}</b>${qtyStr}${buyStr} • ${catBadge}\n\n`;
     });
 
     return text.trim();
@@ -130,7 +228,7 @@ export async function renderExpensesDashboard(
     ]);
 
     let text = `👥 <b>Распределение расходов за ${periodLabel}:</b>\n\n`;
-    text += `💰 <b>Общие траты группы:</b> ${formatMoney(summary.totalAmount)}\n`;
+    text += `💰 <b>Общие траты группы:</b> <b>${formatMoney(summary.totalAmount)}</b>\n`;
     text += `🧾 <b>Всего чеков:</b> ${summary.receiptsCount}\n\n`;
 
     if (users.length === 0) {
@@ -141,7 +239,7 @@ export async function renderExpensesDashboard(
     for (const u of users) {
       const bar = formatProgressBar(u.percentage, 8);
       text += `👤 <b>${escapeHtml(u.user_name)}</b>\n`;
-      text += `└ ${formatMoney(u.totalSpent)}  [<code>${bar}</code>] <b>${u.percentage}%</b> (чеков: ${u.receiptsCount})\n\n`;
+      text += `└ <b>${formatMoney(u.totalSpent)}</b>  [${bar}] <b>${u.percentage}%</b> (чеков: ${u.receiptsCount})\n\n`;
     }
 
     return text.trim();
@@ -183,7 +281,7 @@ export async function renderExpensesDashboard(
   ]);
 
   let text = `📊 <b>Дэшборд расходов (${periodLabel}):</b>\n\n`;
-  text += `💰 <b>Всего потрачено:</b> <code>${formatMoney(summary.totalAmount)}</code>\n`;
+  text += `💰 <b>Всего потрачено:</b> <b>${formatMoney(summary.totalAmount)}</b>\n`;
   text += `🧾 <b>Чеков обработано:</b> <b>${summary.receiptsCount}</b>\n`;
   text += `📈 <b>Средний чек:</b> <b>${formatMoney(summary.averageReceipt)}</b>\n`;
   text += `🛍 <b>Куплено товаров:</b> <b>${summary.itemsCount} шт.</b>\n\n`;
@@ -202,8 +300,8 @@ export async function renderExpensesDashboard(
     const previewCats = categories.slice(0, 4);
     for (const c of previewCats) {
       const bar = formatProgressBar(c.percentage, 8);
-      const catClean = cleanCategoryName(c.category);
-      text += `• ${escapeHtml(catClean)}: <b>${formatMoney(c.totalSpent)}</b> [<code>${bar}</code> ${c.percentage}%]\n`;
+      const catBadge = formatCategoryBadge(c.category);
+      text += `• ${catBadge}: <b>${formatMoney(c.totalSpent)}</b> [${bar} ${c.percentage}%]\n`;
     }
     if (categories.length > 4) {
       text += `<i>... и ещё ${categories.length - 4} категорий (см. вкладку «🏷 Категории»)</i>\n`;
@@ -216,8 +314,8 @@ export async function renderExpensesDashboard(
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
     text += `🏆 <b>Топ покупок по сумме:</b>\n`;
     topProducts.forEach((p, idx) => {
-      const catBadge = cleanCategoryName(p.category);
-      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — ${formatMoney(p.totalSpent)} • <code>${escapeHtml(catBadge)}</code>\n`;
+      const catBadge = formatCategoryBadge(p.category);
+      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — <b>${formatMoney(p.totalSpent)}</b> • ${catBadge}\n`;
     });
     text += `\n`;
   }
@@ -238,7 +336,7 @@ export async function renderExpensesDashboard(
 
 /**
  * Renders the detailed digital card for a specific saved receipt.
- * Clean layout without icons in the header summary and with monospace badge styling for categories.
+ * Clean layout without icons in the header summary and with color badge styling for categories.
  */
 export function renderReceiptCard(
   receipt: Receipt,
@@ -255,7 +353,7 @@ export function renderReceiptCard(
   let card = `✅ <b>Чек успешно распознан и сохранён в базу!</b>\n\n`;
   card += `<b>Чек #${receipt.id}</b>${storeHeader}\n`;
   card += `<b>Дата:</b> ${dateFormatted}\n`;
-  card += `<b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
+  card += `<b>Итоговая сумма:</b> <b>${formatMoney(receipt.total_amount)}</b>\n`;
   card += `<b>Всего позиций:</b> ${receipt.items_count}\n`;
   if (isGroup && receipt.user_name) {
     card += `<b>Оплатил(а):</b> ${escapeHtml(receipt.user_name)}\n`;
@@ -269,9 +367,9 @@ export function renderReceiptCard(
       const num = idx + 1;
       const qtyStr = it.quantity && it.quantity !== 1 ? ` (${it.quantity} шт.)` : '';
       const unitPriceStr = it.unit_price && it.quantity > 1 ? ` [по ${formatMoney(it.unit_price)}]` : '';
-      const catBadge = cleanCategoryName(it.category);
+      const badge = formatCategoryBadge(it.category);
       card += `<b>${num}. ${escapeHtml(it.name)}</b>${qtyStr}\n`;
-      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <code>${escapeHtml(catBadge)}</code>\n`;
+      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • ${badge}\n`;
     });
   } else {
     card += `<i>Позиции сохранены в базе чеков.</i>\n`;
