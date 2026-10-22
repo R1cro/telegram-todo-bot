@@ -1,5 +1,6 @@
 import { InlineKeyboard } from 'grammy';
-import type { Category, TodoItem, CategoryStats } from './db.js';
+import type { Category, TodoItem, CategoryStats, PeriodFilter } from './db.js';
+import type { ExpensesTab } from './analytics.js';
 
 /**
  * Builds the inline keyboard for the separate navigation message located under the list card.
@@ -90,6 +91,7 @@ export function buildListKeyboard(
   if (items.length > 0) {
     keyboard
       .text('🏁 Закрыть список', `confirm_finish:${category}`)
+      .text('📊 Траты', 'exp_open:7d')
       .text('📋 Текстом', `export:${category}`)
       .row();
 
@@ -200,4 +202,115 @@ export function buildConfirmFinishKeyboard(category: Category): InlineKeyboard {
 export function buildCancelEditKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text('❌ Отмена правки', 'cancel_edit');
+}
+
+/**
+ * Builds the interactive keyboard for the expenses analytics dashboard.
+ * Supports switching periods (7d, 14d, 30d) and tabs (overview, categories, products, users, receipts).
+ */
+export function buildExpensesKeyboard(
+  activePeriod: PeriodFilter = '7d',
+  activeTab: ExpensesTab = 'overview',
+  isGroup: boolean = false,
+  recentReceiptIds: number[] = []
+): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  // Row 1: Period filters
+  const period7Text = activePeriod === '7d' ? '👉 7 дней' : '7 дней';
+  const period14Text = activePeriod === '14d' ? '👉 14 дней' : '14 дней';
+  const period30Text = activePeriod === '30d' ? '👉 Месяц' : 'Месяц';
+
+  if (activePeriod === '7d') {
+    keyboard.text({ text: period7Text, style: 'primary' }, `exp_period:7d:${activeTab}`);
+  } else {
+    keyboard.text(period7Text, `exp_period:7d:${activeTab}`);
+  }
+
+  if (activePeriod === '14d') {
+    keyboard.text({ text: period14Text, style: 'primary' }, `exp_period:14d:${activeTab}`);
+  } else {
+    keyboard.text(period14Text, `exp_period:14d:${activeTab}`);
+  }
+
+  if (activePeriod === '30d') {
+    keyboard.text({ text: period30Text, style: 'primary' }, `exp_period:30d:${activeTab}`);
+  } else {
+    keyboard.text(period30Text, `exp_period:30d:${activeTab}`);
+  }
+  keyboard.row();
+
+  // Row 2: Analytics tabs
+  const tabOverview = activeTab === 'overview' ? '👉 📊 Обзор' : '📊 Обзор';
+  const tabCats = activeTab === 'categories' ? '👉 🏷 Категории' : '🏷 Категории';
+  const tabProducts = activeTab === 'products' ? '👉 🏆 Товары' : '🏆 Товары';
+
+  if (activeTab === 'overview') {
+    keyboard.text({ text: tabOverview, style: 'primary' }, `exp_tab:${activePeriod}:overview`);
+  } else {
+    keyboard.text(tabOverview, `exp_tab:${activePeriod}:overview`);
+  }
+
+  if (activeTab === 'categories') {
+    keyboard.text({ text: tabCats, style: 'primary' }, `exp_tab:${activePeriod}:categories`);
+  } else {
+    keyboard.text(tabCats, `exp_tab:${activePeriod}:categories`);
+  }
+
+  if (activeTab === 'products') {
+    keyboard.text({ text: tabProducts, style: 'primary' }, `exp_tab:${activePeriod}:products`);
+  } else {
+    keyboard.text(tabProducts, `exp_tab:${activePeriod}:products`);
+  }
+  keyboard.row();
+
+  // Row 3: Users (for groups) & Receipts
+  if (isGroup) {
+    const tabUsers = activeTab === 'users' ? '👉 👥 Участники' : '👥 Участники';
+    if (activeTab === 'users') {
+      keyboard.text({ text: tabUsers, style: 'primary' }, `exp_tab:${activePeriod}:users`);
+    } else {
+      keyboard.text(tabUsers, `exp_tab:${activePeriod}:users`);
+    }
+  }
+
+  const tabReceipts = activeTab === 'receipts' ? '👉 🧾 Чеки' : '🧾 Чеки';
+  if (activeTab === 'receipts') {
+    keyboard.text({ text: tabReceipts, style: 'primary' }, `exp_tab:${activePeriod}:receipts`);
+  } else {
+    keyboard.text(tabReceipts, `exp_tab:${activePeriod}:receipts`);
+  }
+  keyboard.row();
+
+  // If in receipts tab and receipts exist, show quick delete buttons
+  if (activeTab === 'receipts' && recentReceiptIds.length > 0) {
+    for (let i = 0; i < recentReceiptIds.length; i += 2) {
+      const id1 = recentReceiptIds[i];
+      const id2 = recentReceiptIds[i + 1];
+
+      keyboard.text({ text: `🗑 Чек #${id1}`, style: 'danger' }, `exp_del_receipt:${id1}:${activePeriod}`);
+      if (id2) {
+        keyboard.text({ text: `🗑 Чек #${id2}`, style: 'danger' }, `exp_del_receipt:${id2}:${activePeriod}`);
+      }
+      keyboard.row();
+    }
+  }
+
+  // Row 4: Refresh and back to shopping list
+  keyboard
+    .text('🔄 Обновить', `exp_refresh:${activePeriod}:${activeTab}`)
+    .text('🛒 К списку', 'tab:shopping');
+
+  return keyboard;
+}
+
+/**
+ * Builds the inline keyboard for a newly scanned receipt card.
+ */
+export function buildReceiptCardKeyboard(receiptId: number): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('📊 Дэшборд трат', 'exp_open:7d')
+    .text('🛒 К списку', 'tab:shopping')
+    .row()
+    .text({ text: '🗑 Удалить этот чек', style: 'danger' }, `exp_del_receipt:${receiptId}:7d`);
 }
