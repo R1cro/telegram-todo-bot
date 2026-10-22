@@ -40,6 +40,69 @@ export interface CategoryStats {
   taskDone: number;
 }
 
+export type PeriodFilter = '7d' | '14d' | '30d';
+
+export interface ReceiptItemInput {
+  name: string;
+  category: string;
+  quantity: number;
+  unit_price?: number | null;
+  total_price: number;
+}
+
+export interface ReceiptItem extends ReceiptItemInput {
+  id: number;
+  receipt_id: number;
+  chat_id: number;
+  user_id: number;
+  created_at: string;
+}
+
+export interface Receipt {
+  id: number;
+  chat_id: number;
+  user_id: number;
+  user_name?: string | null;
+  store_name?: string | null;
+  receipt_date: string;
+  total_amount: number;
+  items_count: number;
+  raw_json?: string | null;
+  created_at: string;
+  items?: ReceiptItem[];
+}
+
+export interface ExpensesSummary {
+  periodDays: number;
+  totalAmount: number;
+  receiptsCount: number;
+  itemsCount: number;
+  averageReceipt: number;
+}
+
+export interface CategoryExpense {
+  category: string;
+  totalSpent: number;
+  itemsCount: number;
+  percentage: number;
+}
+
+export interface UserExpenseShare {
+  user_id: number;
+  user_name: string;
+  totalSpent: number;
+  receiptsCount: number;
+  percentage: number;
+}
+
+export interface ProductPopularity {
+  name: string;
+  category: string;
+  buyCount: number;
+  totalQuantity: number;
+  totalSpent: number;
+}
+
 let dbClient: Client | null = null;
 
 export function getDb(): Client {
@@ -138,6 +201,52 @@ export async function initDatabase(): Promise<void> {
 
   await db.execute(`
     CREATE INDEX IF NOT EXISTS idx_items_list_category ON items(list_id, category)
+  `);
+
+  // Receipts entity table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS receipts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      user_name TEXT,
+      store_name TEXT,
+      receipt_date DATETIME NOT NULL,
+      total_amount REAL NOT NULL,
+      items_count INTEGER NOT NULL DEFAULT 0,
+      raw_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_receipts_chat_date ON receipts(chat_id, receipt_date)
+  `);
+
+  // Receipt items table
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS receipt_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      receipt_id INTEGER NOT NULL,
+      chat_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Прочее',
+      quantity REAL NOT NULL DEFAULT 1,
+      unit_price REAL,
+      total_price REAL NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_receipt_items_receipt_id ON receipt_items(receipt_id)
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_receipt_items_chat_created ON receipt_items(chat_id, created_at)
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_receipt_items_name ON receipt_items(name)
   `);
 }
 
@@ -582,4 +691,353 @@ export async function getBotAuditData() {
     db.execute('SELECT chat_id, title, username, status, updated_at FROM bot_group_memberships ORDER BY updated_at DESC'),
   ]);
   return { users: users.rows, knownGroups: knownGroups.rows, membershipEvents: membershipEvents.rows };
+}
+
+// ---------------- RECEIPT & EXPENSE ANALYTICS ---------------- //
+
+export async function addReceipt(
+  chatId: number,
+  userId: number,
+  userName: string | undefined,
+  storeName: string | undefined,
+  receiptDate: string,
+  totalAmount: number,
+  items: ReceiptItemInput[],
+  rawJson?: string
+): Promise<Receipt> {
+  const db = getDb();
+
+  const receiptResult = await db.execute({
+    sql: `INSERT INTO receipts (chat_id, user_id, user_name, store_name, receipt_date, total_amount, items_count, raw_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      chatId,
+      userId,
+      userName ?? null,
+      storeName ?? null,
+      receiptDate,
+      totalAmount,
+      items.length,
+      rawJson ?? null,
+    ],
+  });
+
+  const receiptId = Number(receiptResult.lastInsertRowid);
+  const insertedItems: ReceiptItem[] = [];
+
+  for (const it of items) {
+    const itemResult = await db.execute({
+      sql: `INSERT INTO receipt_items (receipt_id, chat_id, user_id, name, category, quantity, unit_price, total_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        receiptId,
+        chatId,
+        userId,
+        it.name,
+        it.category || 'Прочее',
+        it.quantity || 1,
+        it.unit_price ?? null,
+        it.total_price,
+      ],
+    });
+
+    insertedItems.push({
+      id: Number(itemResult.lastInsertRowid),
+      receipt_id: receiptId,
+      chat_id: chatId,
+      user_id: userId,
+      name: it.name,
+      category: it.category || 'Прочее',
+      quantity: it.quantity || 1,
+      unit_price: it.unit_price ?? null,
+      total_price: it.total_price,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  return {
+    id: receiptId,
+    chat_id: chatId,
+    user_id: userId,
+    user_name: userName,
+    store_name: storeName,
+    receipt_date: receiptDate,
+    total_amount: totalAmount,
+    items_count: items.length,
+    raw_json: rawJson,
+    created_at: new Date().toISOString(),
+    items: insertedItems,
+  };
+}
+
+export async function getReceiptById(receiptId: number): Promise<Receipt | null> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: 'SELECT * FROM receipts WHERE id = ?',
+    args: [receiptId],
+  });
+  if (res.rows.length === 0) return null;
+  const row = res.rows[0];
+
+  const itemsRes = await db.execute({
+    sql: 'SELECT * FROM receipt_items WHERE receipt_id = ? ORDER BY id ASC',
+    args: [receiptId],
+  });
+
+  return {
+    id: Number(row.id),
+    chat_id: Number(row.chat_id),
+    user_id: Number(row.user_id),
+    user_name: row.user_name ? String(row.user_name) : null,
+    store_name: row.store_name ? String(row.store_name) : null,
+    receipt_date: String(row.receipt_date),
+    total_amount: Number(row.total_amount),
+    items_count: Number(row.items_count),
+    raw_json: row.raw_json ? String(row.raw_json) : null,
+    created_at: String(row.created_at),
+    items: itemsRes.rows.map((r) => ({
+      id: Number(r.id),
+      receipt_id: Number(r.receipt_id),
+      chat_id: Number(r.chat_id),
+      user_id: Number(r.user_id),
+      name: String(r.name),
+      category: String(r.category),
+      quantity: Number(r.quantity),
+      unit_price: r.unit_price !== null && r.unit_price !== undefined ? Number(r.unit_price) : null,
+      total_price: Number(r.total_price),
+      created_at: String(r.created_at),
+    })),
+  };
+}
+
+export async function deleteReceipt(chatId: number, receiptId: number): Promise<boolean> {
+  const db = getDb();
+  await db.execute({
+    sql: 'DELETE FROM receipt_items WHERE chat_id = ? AND receipt_id = ?',
+    args: [chatId, receiptId],
+  });
+  const res = await db.execute({
+    sql: 'DELETE FROM receipts WHERE chat_id = ? AND id = ?',
+    args: [chatId, receiptId],
+  });
+  return res.rowsAffected > 0;
+}
+
+export async function getRecentReceipts(chatId: number, limit: number = 5): Promise<Receipt[]> {
+  const db = getDb();
+  const res = await db.execute({
+    sql: 'SELECT * FROM receipts WHERE chat_id = ? ORDER BY receipt_date DESC, id DESC LIMIT ?',
+    args: [chatId, limit],
+  });
+
+  return res.rows.map((row) => ({
+    id: Number(row.id),
+    chat_id: Number(row.chat_id),
+    user_id: Number(row.user_id),
+    user_name: row.user_name ? String(row.user_name) : null,
+    store_name: row.store_name ? String(row.store_name) : null,
+    receipt_date: String(row.receipt_date),
+    total_amount: Number(row.total_amount),
+    items_count: Number(row.items_count),
+    raw_json: row.raw_json ? String(row.raw_json) : null,
+    created_at: String(row.created_at),
+  }));
+}
+
+export async function getExpensesSummary(chatId: number, days: number = 7): Promise<ExpensesSummary> {
+  const db = getDb();
+  const daysOffset = `-${Math.max(1, days)} days`;
+
+  const res = await db.execute({
+    sql: `SELECT 
+            COALESCE(SUM(total_amount), 0) AS total_amount,
+            COUNT(id) AS receipts_count,
+            COALESCE(SUM(items_count), 0) AS items_count
+          FROM receipts 
+          WHERE chat_id = ? 
+            AND (receipt_date >= datetime('now', ?) OR created_at >= datetime('now', ?))`,
+    args: [chatId, daysOffset, daysOffset],
+  });
+
+  const row = res.rows[0];
+  const totalAmount = Number(row?.total_amount || 0);
+  const receiptsCount = Number(row?.receipts_count || 0);
+  const itemsCount = Number(row?.items_count || 0);
+  const averageReceipt = receiptsCount > 0 ? Math.round((totalAmount / receiptsCount) * 100) / 100 : 0;
+
+  return {
+    periodDays: days,
+    totalAmount,
+    receiptsCount,
+    itemsCount,
+    averageReceipt,
+  };
+}
+
+export async function getCategoryExpenses(chatId: number, days: number = 30): Promise<CategoryExpense[]> {
+  const db = getDb();
+  const daysOffset = `-${Math.max(1, days)} days`;
+
+  const totalRes = await db.execute({
+    sql: `SELECT COALESCE(SUM(total_price), 0) AS total_spent 
+          FROM receipt_items 
+          WHERE chat_id = ? AND created_at >= datetime('now', ?)`,
+    args: [chatId, daysOffset],
+  });
+  const overallTotal = Number(totalRes.rows[0]?.total_spent || 0);
+
+  const res = await db.execute({
+    sql: `SELECT 
+            category,
+            SUM(total_price) AS total_spent,
+            COUNT(id) AS items_count
+          FROM receipt_items
+          WHERE chat_id = ? AND created_at >= datetime('now', ?)
+          GROUP BY category
+          ORDER BY total_spent DESC`,
+    args: [chatId, daysOffset],
+  });
+
+  return res.rows.map((row) => {
+    const totalSpent = Number(row.total_spent || 0);
+    const itemsCount = Number(row.items_count || 0);
+    const percentage = overallTotal > 0 ? Math.round((totalSpent / overallTotal) * 100) : 0;
+    return {
+      category: String(row.category || 'Прочее'),
+      totalSpent,
+      itemsCount,
+      percentage,
+    };
+  });
+}
+
+export async function getUserExpenses(chatId: number, days: number = 30): Promise<UserExpenseShare[]> {
+  const db = getDb();
+  const daysOffset = `-${Math.max(1, days)} days`;
+
+  const totalRes = await db.execute({
+    sql: `SELECT COALESCE(SUM(total_amount), 0) AS grand_total 
+          FROM receipts 
+          WHERE chat_id = ? AND (receipt_date >= datetime('now', ?) OR created_at >= datetime('now', ?))`,
+    args: [chatId, daysOffset, daysOffset],
+  });
+  const grandTotal = Number(totalRes.rows[0]?.grand_total || 0);
+
+  const res = await db.execute({
+    sql: `SELECT 
+            user_id,
+            user_name,
+            SUM(total_amount) AS total_spent,
+            COUNT(id) AS receipts_count
+          FROM receipts
+          WHERE chat_id = ? AND (receipt_date >= datetime('now', ?) OR created_at >= datetime('now', ?))
+          GROUP BY user_id
+          ORDER BY total_spent DESC`,
+    args: [chatId, daysOffset, daysOffset],
+  });
+
+  return res.rows.map((row) => {
+    const totalSpent = Number(row.total_spent || 0);
+    const percentage = grandTotal > 0 ? Math.round((totalSpent / grandTotal) * 100) : 0;
+    return {
+      user_id: Number(row.user_id),
+      user_name: row.user_name ? String(row.user_name) : `ID ${row.user_id}`,
+      totalSpent,
+      receiptsCount: Number(row.receipts_count || 0),
+      percentage,
+    };
+  });
+}
+
+export async function getProductPopularity(
+  chatId: number,
+  days: number = 30,
+  limit: number = 10
+): Promise<ProductPopularity[]> {
+  const db = getDb();
+  const daysOffset = `-${Math.max(1, days)} days`;
+
+  const res = await db.execute({
+    sql: `SELECT 
+            name,
+            category,
+            COUNT(id) AS buy_count,
+            SUM(quantity) AS total_qty,
+            SUM(total_price) AS total_spent
+          FROM receipt_items
+          WHERE chat_id = ? AND created_at >= datetime('now', ?)
+          GROUP BY LOWER(TRIM(name))
+          ORDER BY total_spent DESC, buy_count DESC
+          LIMIT ?`,
+    args: [chatId, daysOffset, limit],
+  });
+
+  return res.rows.map((row) => ({
+    name: String(row.name),
+    category: String(row.category || 'Прочее'),
+    buyCount: Number(row.buy_count || 0),
+    totalQuantity: Number(row.total_qty || 0),
+    totalSpent: Math.round(Number(row.total_spent || 0) * 100) / 100,
+  }));
+}
+
+function extractSignificantTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3 && !/^\d+$/.test(w));
+}
+
+export async function markMatchingShoppingItemsDone(
+  chatId: number,
+  listId: number,
+  boughtItemNames: string[]
+): Promise<TodoItem[]> {
+  const db = getDb();
+  const activeItems = await getListItems(listId, 'shopping');
+  const uncompleted = activeItems.filter((i) => !i.is_done);
+  if (uncompleted.length === 0 || boughtItemNames.length === 0) return [];
+
+  const matchedItems: TodoItem[] = [];
+
+  for (const item of uncompleted) {
+    const cleanItemName = item.text.toLowerCase().trim();
+    const itemTokens = extractSignificantTokens(item.text);
+
+    const isMatched = boughtItemNames.some((bought) => {
+      const b = bought.toLowerCase().trim();
+      if (b === cleanItemName) return true;
+      if (cleanItemName.length >= 4 && b.includes(cleanItemName)) return true;
+      if (b.length >= 4 && cleanItemName.includes(b)) return true;
+
+      // Token / Stem matching (e.g. "молоко" matches "Молоко Домик в деревне")
+      const boughtTokens = extractSignificantTokens(bought);
+      return itemTokens.some((iTok) =>
+        boughtTokens.some((bTok) => {
+          if (iTok === bTok) return true;
+          // Substring/prefix root match for words of length >= 4 (e.g. "яйц" for "яйца" / "яйцо")
+          const minLen = Math.min(iTok.length, bTok.length);
+          if (minLen >= 4 && (iTok.startsWith(bTok.slice(0, 4)) || bTok.startsWith(iTok.slice(0, 4)))) {
+            return true;
+          }
+          return false;
+        })
+      );
+    });
+
+    if (isMatched) {
+      await db.execute({
+        sql: 'UPDATE items SET is_done = 1 WHERE chat_id = ? AND id = ?',
+        args: [chatId, item.id],
+      });
+      matchedItems.push({
+        ...item,
+        is_done: true,
+      });
+    }
+  }
+
+  return matchedItems;
 }
