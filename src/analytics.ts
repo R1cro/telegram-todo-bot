@@ -11,6 +11,19 @@ import {
 
 export type ExpensesTab = 'overview' | 'categories' | 'products' | 'users' | 'receipts';
 
+/**
+ * Escapes characters that have special meaning in Telegram HTML formatting.
+ */
+export function escapeHtml(text: string | null | undefined): string {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 export function parsePeriodDays(period: PeriodFilter): number {
   switch (period) {
     case '7d':
@@ -64,7 +77,7 @@ export async function renderExpensesDashboard(
 
     for (const cat of categories) {
       const bar = formatProgressBar(cat.percentage, 8);
-      text += `<b>${cat.category}</b>\n`;
+      text += `<b>${escapeHtml(cat.category)}</b>\n`;
       text += `└ ${formatMoney(cat.totalSpent)}  [<code>${bar}</code>] <b>${cat.percentage}%</b> (поз: ${cat.itemsCount})\n\n`;
     }
 
@@ -92,9 +105,9 @@ export async function renderExpensesDashboard(
       const num = index + 1;
       const qtyStr = p.totalQuantity > 1 ? ` (кол-во: <b>${p.totalQuantity}</b>)` : '';
       const buyStr = p.buyCount > 1 ? ` • покупок: ${p.buyCount}` : '';
-      text += `<b>${num}. ${p.name}</b>\n`;
+      text += `<b>${num}. ${escapeHtml(p.name)}</b>\n`;
       text += `   └ <b>${formatMoney(p.totalSpent)}</b>${qtyStr}${buyStr}\n`;
-      text += `   └ <i>${p.category}</i>\n\n`;
+      text += `   └ <i>${escapeHtml(p.category)}</i>\n\n`;
     });
 
     return text.trim();
@@ -117,7 +130,7 @@ export async function renderExpensesDashboard(
 
     for (const u of users) {
       const bar = formatProgressBar(u.percentage, 8);
-      text += `👤 <b>${u.user_name}</b>\n`;
+      text += `👤 <b>${escapeHtml(u.user_name)}</b>\n`;
       text += `└ ${formatMoney(u.totalSpent)}  [<code>${bar}</code>] <b>${u.percentage}%</b> (чеков: ${u.receiptsCount})\n\n`;
     }
 
@@ -140,14 +153,14 @@ export async function renderExpensesDashboard(
         month: '2-digit',
         year: 'numeric',
       });
-      const storeStr = r.store_name ? ` «<b>${r.store_name}</b>»` : '';
-      const userStr = isGroup && r.user_name ? ` (👤 ${r.user_name})` : '';
+      const storeStr = r.store_name ? ` «<b>${escapeHtml(r.store_name)}</b>»` : '';
+      const userStr = isGroup && r.user_name ? ` (👤 ${escapeHtml(r.user_name)})` : '';
 
       text += `<b>${i + 1}. Чек #${r.id}</b>${storeStr} от ${dateStr}${userStr}\n`;
       text += `   └ Сумма: <b>${formatMoney(r.total_amount)}</b> (позиций: ${r.items_count})\n\n`;
     });
 
-    text += `💡 <i>Чтобы удалить чек, используйте кнопку с его номером ниже.</i>`;
+    text += `💡 <i>Чтобы открыть детали чека, нажмите кнопку с его номером ниже.</i>`;
     return text.trim();
   }
 
@@ -179,7 +192,7 @@ export async function renderExpensesDashboard(
     const previewCats = categories.slice(0, 4);
     for (const c of previewCats) {
       const bar = formatProgressBar(c.percentage, 8);
-      text += `• ${c.category}: <b>${formatMoney(c.totalSpent)}</b> [<code>${bar}</code> ${c.percentage}%]\n`;
+      text += `• ${escapeHtml(c.category)}: <b>${formatMoney(c.totalSpent)}</b> [<code>${bar}</code> ${c.percentage}%]\n`;
     }
     if (categories.length > 4) {
       text += `<i>... и ещё ${categories.length - 4} категорий (см. вкладку «🏷 Категории»)</i>\n`;
@@ -192,7 +205,7 @@ export async function renderExpensesDashboard(
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
     text += `🏆 <b>Топ покупок по сумме:</b>\n`;
     topProducts.forEach((p, idx) => {
-      text += `${idx + 1}. <b>${p.name}</b> — ${formatMoney(p.totalSpent)} (${p.totalQuantity} шт.)\n`;
+      text += `${idx + 1}. <b>${escapeHtml(p.name)}</b> — ${formatMoney(p.totalSpent)} (${p.totalQuantity} шт.)\n`;
     });
     text += `\n`;
   }
@@ -202,7 +215,7 @@ export async function renderExpensesDashboard(
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
     text += `👥 <b>Вклад участников:</b>\n`;
     for (const u of users) {
-      text += `• <b>${u.user_name}</b>: ${formatMoney(u.totalSpent)} (${u.percentage}%)\n`;
+      text += `• <b>${escapeHtml(u.user_name)}</b>: ${formatMoney(u.totalSpent)} (${u.percentage}%)\n`;
     }
     text += `\n`;
   }
@@ -224,7 +237,7 @@ export function renderReceiptCard(
     month: '2-digit',
     year: 'numeric',
   });
-  const storeHeader = receipt.store_name ? ` «<b>${receipt.store_name}</b>»` : '';
+  const storeHeader = receipt.store_name ? ` «<b>${escapeHtml(receipt.store_name)}</b>»` : '';
 
   let card = `🧾 <b>Чек #${receipt.id} сохранён в базу!</b>\n\n`;
   card += `🏪 <b>Магазин:</b>${storeHeader}\n`;
@@ -232,7 +245,7 @@ export function renderReceiptCard(
   card += `💰 <b>Итоговая сумма:</b> <code>${formatMoney(receipt.total_amount)}</code>\n`;
   card += `🛍 <b>Всего позиций:</b> <b>${receipt.items_count}</b>\n`;
   if (isGroup && receipt.user_name) {
-    card += `👤 <b>Оплатил(а):</b> ${receipt.user_name}\n`;
+    card += `👤 <b>Оплатил(а):</b> ${escapeHtml(receipt.user_name)}\n`;
   }
   card += `\n`;
 
@@ -243,8 +256,8 @@ export function renderReceiptCard(
       const num = idx + 1;
       const qtyStr = it.quantity && it.quantity !== 1 ? ` (${it.quantity} шт.)` : '';
       const unitPriceStr = it.unit_price && it.quantity > 1 ? ` [по ${formatMoney(it.unit_price)}]` : '';
-      card += `<b>${num}. ${it.name}</b>${qtyStr}\n`;
-      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <i>${it.category}</i>\n`;
+      card += `<b>${num}. ${escapeHtml(it.name)}</b>${qtyStr}\n`;
+      card += `   └ <b>${formatMoney(it.total_price)}</b>${unitPriceStr} • <i>${escapeHtml(it.category)}</i>\n`;
     });
   } else {
     card += `<i>Позиции сохранены в базе чеков.</i>\n`;
@@ -253,11 +266,11 @@ export function renderReceiptCard(
   if (matchedItems.length > 0) {
     card += `\n✅ <b>Вычеркнуто из списка покупок (${matchedItems.length}):</b>\n`;
     for (const m of matchedItems) {
-      card += `• <s>${m.text}</s>\n`;
+      card += `• <s>${escapeHtml(m.text)}</s>\n`;
     }
   }
 
-  card += `\n💾 <i>Данные внесены в ваш профиль и учтены в статистике трат (/expenses).</i>`;
+  card += `\n💾 <i>Данные внесены в ваш профиль и учтены в статистике трат (/expenses, /receipts).</i>`;
   return card.trim();
 }
 
@@ -279,8 +292,8 @@ export function renderReceiptsList(receipts: Receipt[], isGroup: boolean = false
       month: '2-digit',
       year: 'numeric',
     });
-    const storeStr = r.store_name ? ` «<b>${r.store_name}</b>»` : '';
-    const userStr = isGroup && r.user_name ? ` • 👤 ${r.user_name}` : '';
+    const storeStr = r.store_name ? ` «<b>${escapeHtml(r.store_name)}</b>»` : '';
+    const userStr = isGroup && r.user_name ? ` • 👤 ${escapeHtml(r.user_name)}` : '';
 
     text += `<b>${num}. Чек #${r.id}</b>${storeStr} (${dateFormatted})\n`;
     text += `   └ Сумма: <b>${formatMoney(r.total_amount)}</b> (товаров: ${r.items_count})${userStr}\n\n`;

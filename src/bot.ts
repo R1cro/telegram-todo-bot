@@ -39,6 +39,7 @@ import {
   formatMoney,
   renderReceiptCard,
   renderReceiptsList,
+  escapeHtml,
   type ExpensesTab,
 } from './analytics.js';
 import {
@@ -989,6 +990,42 @@ bot.on(['message:voice', 'message:audio'], async (ctx) => {
 
 // ---------------- RECEIPT PHOTO AND DOCUMENT PROCESSING ---------------- //
 
+/**
+ * Safely edits a message with HTML formatting. If Telegram rejects HTML entities (e.g. unescaped tags),
+ * falls back to plain text. If editing fails completely (message missing/deleted/stale), sends a new reply message.
+ */
+async function safeEditOrReply(
+  ctx: any,
+  chatId: number,
+  messageId: number,
+  htmlText: string,
+  extra?: any
+): Promise<void> {
+  try {
+    await ctx.api.editMessageText(chatId, messageId, htmlText, {
+      parse_mode: 'HTML',
+      ...extra,
+    });
+    return;
+  } catch (err: any) {
+    const errMsg = String(err?.message || '');
+    // If Telegram returned entity parse error or modify error, attempt plain text edit
+    try {
+      const plainText = htmlText.replace(/<[^>]*>/g, '');
+      await ctx.api.editMessageText(chatId, messageId, plainText, extra);
+      return;
+    } catch {
+      // If editing failed completely, reply with a fresh message
+      try {
+        await ctx.reply(htmlText, { parse_mode: 'HTML', ...extra });
+      } catch {
+        const plainText = htmlText.replace(/<[^>]*>/g, '');
+        await ctx.reply(plainText, extra);
+      }
+    }
+  }
+}
+
 bot.on(['message:photo', 'message:document'], async (ctx) => {
   const photoArray = ctx.message.photo;
   const document = ctx.message.document;
@@ -1015,19 +1052,21 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
   const isGroup = ctx.chat.type !== 'private';
   const userName = fromUser ? (fromUser.first_name || fromUser.username || `User_${fromUser.id}`) : 'Пользователь';
 
+  console.log(`[Receipt] Received photo/doc from user ${fromUser?.id} (${userName}) in chat ${chatId}`);
+
   // 1. Send immediate receipt status feedback
-  const statusMsg = await ctx.reply('🧾 <b>Фотография получена!</b>\n⏳ <i>Подготовка к сканированию чека...</i>', {
+  const statusMsg = await ctx.reply('🧾 <b>Фотография чека получена!</b>\n⏳ <i>Подготовка к обработке...</i>', {
     parse_mode: 'HTML',
     reply_markup: { remove_keyboard: true },
   });
 
   if (!config.isAiEnabled) {
-    await ctx.api.editMessageText(
+    await safeEditOrReply(
+      ctx,
       chatId,
       statusMsg.message_id,
       '❌ <b>Gemini AI не подключен!</b>\n\n' +
-      'Для сканирования чеков требуется добавить <code>GEMINI_API_KEY</code> в файл <code>.env</code> на сервере и перезапустить бота.',
-      { parse_mode: 'HTML' }
+      'Для сканирования чеков требуется добавить <code>GEMINI_API_KEY</code> в файл <code>.env</code> на сервере и перезапустить бота.'
     );
     return;
   }
@@ -1036,16 +1075,17 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
 
   try {
     // 2. Download photo from Telegram API
-    await ctx.api.editMessageText(
+    await safeEditOrReply(
+      ctx,
       chatId,
       statusMsg.message_id,
-      '🧾 <b>Фотография чека принята!</b>\n⏳ <i>Скачиваю изображение из Telegram...</i>',
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
+      '🧾 <b>Фотография чека принята!</b>\n⏳ <i>Скачиваю изображение из Telegram...</i>'
+    );
 
     const file = await ctx.api.getFile(fileId);
     if (!file.file_path) {
-      await ctx.api.editMessageText(
+      await safeEditOrReply(
+        ctx,
         chatId,
         statusMsg.message_id,
         '❌ Не удалось получить путь к изображению от Telegram API.'
@@ -1056,7 +1096,8 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const fileUrl = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
     const res = await fetch(fileUrl, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) {
-      await ctx.api.editMessageText(
+      await safeEditOrReply(
+        ctx,
         chatId,
         statusMsg.message_id,
         `❌ Ошибка скачивания фото чека: ${res.status} ${res.statusText}`
@@ -1068,29 +1109,31 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const sizeKb = Math.round(arrayBuffer.byteLength / 1024);
     const base64Image = Buffer.from(arrayBuffer).toString('base64');
 
-    await ctx.api.editMessageText(
+    console.log(`[Receipt] Image downloaded (${sizeKb} KB). Passing to Gemini Vision...`);
+
+    await safeEditOrReply(
+      ctx,
       chatId,
       statusMsg.message_id,
-      `📥 <b>Изображение получено (${sizeKb} КБ)</b>\n⏳ <i>Отправляю в нейросеть Gemini AI...</i>`,
-      { parse_mode: 'HTML' }
-    ).catch(() => {});
+      `📥 <b>Изображение получено (${sizeKb} КБ)</b>\n⏳ <i>Отправляю в нейросеть Gemini AI...</i>`
+    );
 
     const onProgress = async (text: string) => {
-      try {
-        await ctx.api.editMessageText(chatId, statusMsg.message_id, text, { parse_mode: 'HTML' });
-      } catch {}
+      await safeEditOrReply(ctx, chatId, statusMsg.message_id, text);
     };
 
     // 3. Scan receipt with Gemini
     const scanResult = await scanReceiptWithGemini(base64Image, mimeType, onProgress);
 
     if (!scanResult.success || !scanResult.items || scanResult.items.length === 0) {
-      await ctx.api.editMessageText(
+      console.warn(`[Receipt] Scan failed or zero items: ${scanResult.error}`);
+      const safeErr = escapeHtml(scanResult.error || 'Товары не найдены на изображении.');
+      await safeEditOrReply(
+        ctx,
         chatId,
         statusMsg.message_id,
-        `⚠️ <b>Не удалось распознать чек:</b>\n${scanResult.error || 'Товары не найдены на изображении.'}\n\n` +
-        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и при хорошем освещении.</i>`,
-        { parse_mode: 'HTML' }
+        `⚠️ <b>Не удалось распознать чек:</b>\n${safeErr}\n\n` +
+        `💡 <i>Убедитесь, что чек сфотографирован чётко, вертикально и при хорошем освещении.</i>`
       );
       return;
     }
@@ -1109,6 +1152,8 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       scanResult.rawText
     );
 
+    console.log(`[Receipt] Successfully saved receipt #${savedReceipt.id} (${savedReceipt.items_count} items, ${savedReceipt.total_amount} ₽)`);
+
     // 5. Auto-match bought items with active shopping list
     const activeList = await getOrCreateActiveList(chatId);
     const boughtNames = scanResult.items.map((i) => i.name);
@@ -1123,8 +1168,7 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
     const cardText = renderReceiptCard(savedReceipt, matchedShoppingItems, isGroup);
 
     // Replace status message with the completed receipt card
-    await ctx.api.editMessageText(chatId, statusMsg.message_id, cardText, {
-      parse_mode: 'HTML',
+    await safeEditOrReply(ctx, chatId, statusMsg.message_id, cardText, {
       reply_markup: buildReceiptCardKeyboard(savedReceipt.id),
     });
 
@@ -1135,11 +1179,11 @@ bot.on(['message:photo', 'message:document'], async (ctx) => {
       } catch {}
     }
   } catch (error: any) {
-    console.error('Error handling receipt photo message:', error);
-    try {
-      const errorMsg = `❌ <b>Ошибка при обработке фото чека:</b>\n<code>${error?.message || error}</code>`;
-      await ctx.api.editMessageText(chatId, statusMsg.message_id, errorMsg, { parse_mode: 'HTML' });
-    } catch {}
+    console.error('[Receipt] Error handling receipt photo message:', error);
+    const safeErr = escapeHtml(error?.message || String(error));
+    const errorMsg = `❌ <b>Ошибка при обработке фото чека:</b>\n<code>${safeErr}</code>\n\n` +
+      `💡 <i>Если ошибка повторяется, проверьте доступность Gemini AI и сетевое соединение.</i>`;
+    await safeEditOrReply(ctx, chatId, statusMsg.message_id, errorMsg);
   }
 });
 
@@ -1630,12 +1674,9 @@ bot.on('callback_query:data', async (ctx) => {
     const text = await renderExpensesDashboard(chatId, period, 'receipts', isGroup);
     const keyboard = buildExpensesKeyboard(period, 'receipts', isGroup, recentReceiptIds);
 
-    try {
-      await ctx.api.editMessageText(chatId, messageId, text, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-    } catch {}
+    await safeEditOrReply(ctx, chatId, messageId, text, {
+      reply_markup: keyboard,
+    });
     return;
   }
 
@@ -1656,12 +1697,9 @@ bot.on('callback_query:data', async (ctx) => {
     const card = renderReceiptCard(receipt, [], isGroup);
     const keyboard = buildReceiptDetailKeyboard(receipt.id, period);
 
-    try {
-      await ctx.api.editMessageText(chatId, messageId, card, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-    } catch {}
+    await safeEditOrReply(ctx, chatId, messageId, card, {
+      reply_markup: keyboard,
+    });
     return;
   }
 
@@ -1673,12 +1711,9 @@ bot.on('callback_query:data', async (ctx) => {
     const keyboard = buildReceiptsListKeyboard(receipts);
 
     await ctx.answerCallbackQuery();
-    try {
-      await ctx.api.editMessageText(chatId, messageId, text, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      });
-    } catch {}
+    await safeEditOrReply(ctx, chatId, messageId, text, {
+      reply_markup: keyboard,
+    });
     return;
   }
 

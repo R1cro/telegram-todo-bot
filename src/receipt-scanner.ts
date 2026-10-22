@@ -330,9 +330,9 @@ export async function scanReceiptWithGemini(
   const candidateModels = Array.from(
     new Set([
       config.geminiModel,
-      'gemini-3.8-flash',
-      'gemini-3.5-flash',
+      'gemini-2.0-flash',
       'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
     ].filter(Boolean))
   );
 
@@ -343,14 +343,18 @@ export async function scanReceiptWithGemini(
 
     if (onProgress) {
       if (modelIdx === 0) {
-        await onProgress(`🔍 <b>Gemini AI (${model}) анализирует чек...</b>\n⏳ <i>Извлекаю позиции, количество и суммы...</i>`);
+        await onProgress(`🔍 <b>Нейросеть Gemini AI (${model}) распознаёт чек...</b>\n⏳ <i>Извлекаю позиции, количество и суммы...</i>`);
       } else {
-        await onProgress(`🔄 <i>Переключаюсь на модель ${model}...</i>\n⏳ <i>Повторный опрос нейросети...</i>`);
+        await onProgress(`🔄 <i>Переключаюсь на резервную модель ${model}...</i>\n⏳ <i>Повторный опрос нейросети...</i>`);
       }
     }
 
+    let modelUnavailable = false;
+
     // Try first with JSON schema; if that errors with schema validation, try plain JSON
     for (const payload of [requestPayloadWithSchema, requestPayloadPlainJson]) {
+      if (modelUnavailable) break;
+
       try {
         const callPromise = client.models.generateContent({
           model,
@@ -358,10 +362,10 @@ export async function scanReceiptWithGemini(
         });
 
         let timerId: NodeJS.Timeout;
-        const timeoutMs = 18000;
+        const timeoutMs = 14000;
         const timeoutPromise = new Promise((_, reject) => {
           timerId = setTimeout(
-            () => reject(new Error(`Timeout: Gemini request for ${model} took longer than 18s`)),
+            () => reject(new Error(`Timeout: запрос к модели ${model} превысил 14 сек.`)),
             timeoutMs
           );
         });
@@ -436,15 +440,37 @@ export async function scanReceiptWithGemini(
         };
       } catch (err: any) {
         lastError = err;
-        console.warn(`Gemini attempt failed for model ${model}:`, err?.message || err);
+        const errMsg = String(err?.message || '');
+        console.warn(`[Receipt] Gemini attempt failed for model ${model}:`, errMsg);
+
+        if (
+          errMsg.includes('not found') ||
+          errMsg.includes('404') ||
+          errMsg.includes('no longer available') ||
+          errMsg.includes('limiting access') ||
+          errMsg.includes('User location is not supported')
+        ) {
+          modelUnavailable = true;
+          break;
+        }
       }
     }
   }
 
-  console.error('Gemini receipt scanning failed across all models:', lastError);
+  console.error('[Receipt] Gemini receipt scanning failed across all models:', lastError);
+
+  let userFriendlyError = lastError?.message || 'ошибка сервиса Gemini';
+  if (userFriendlyError.includes('User location is not supported')) {
+    userFriendlyError = 'Регион вашего IP-адреса не поддерживается Google Gemini API. Для работы требуется подключение через VPN/прокси.';
+  } else if (userFriendlyError.includes('API_KEY_INVALID') || userFriendlyError.includes('API key not valid')) {
+    userFriendlyError = 'Неверный GEMINI_API_KEY. Проверьте ключ в файле .env.';
+  } else if (userFriendlyError.includes('RESOURCE_EXHAUSTED') || userFriendlyError.includes('429')) {
+    userFriendlyError = 'Превышен лимит запросов к Google Gemini API. Пожалуйста, повторите попытку через минуту.';
+  }
+
   return {
     success: false,
     items: [],
-    error: `Не удалось распознать чек: ${lastError?.message || 'ошибка сервиса Gemini'}`,
+    error: `Не удалось распознать чек: ${userFriendlyError}`,
   };
 }
